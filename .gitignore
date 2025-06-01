@@ -1,0 +1,32 @@
+# Node modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# dotenv environment files
+.env
+.env.*
+
+# Coverage directory
+coverage/
+
+# VSCode settings
+.vscode/
+
+# Build output
+dist/
+build/
+
+# Netlify
+.netlify/
+
+# Optional: lock files (if you're only using one type of package manager)
+# package-lock.json
+# yarn.lock
