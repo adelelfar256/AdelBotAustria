@@ -4,25 +4,23 @@ const TelegramBot = require('node-telegram-bot-api');
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 // =========================
-// CONFIG (HARDCODED)
+// CONFIG
 // =========================
 const telegramToken = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
 const telegramChatIds = [7379376037];
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
-const CHECK_INTERVAL = 60000; // 1 minute
-const CALENDAR_VALUE = '44281520'; // Example: Bachelor student
+const CHECK_INTERVAL = 10000; // 10s between loops for testing
+const CALENDAR_VALUE = '44281520'; 
 const CALENDAR_SELECTOR = '#CalendarId';
 const NEXT_BUTTON_SELECTOR = 'input[name="Command"][value="Next"]';
+const BACK_BUTTON_SELECTOR = 'input[name="Command"][value="Back"]';
 
 // =========================
 // TELEGRAM BOT
 // =========================
 const bot = new TelegramBot(telegramToken, { polling: true });
-
-bot.on('polling_error', (error) => {
-    console.error('Polling error:', error.message || error);
-});
+bot.on('polling_error', err => console.error('Telegram polling error:', err.message));
 
 async function sendToAll(message) {
     for (const id of telegramChatIds) {
@@ -47,71 +45,73 @@ function logStep(step, extra = '') {
 // MAIN LOOP
 // =========================
 async function run() {
-    while (true) {
-        let browser;
-        try {
-            logStep('NEXT', 'Starting new cycle...');
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: 'new', // visible browser
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
 
-            browser = await puppeteer.launch({
-                headless: 'new',
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu'
-                ]
-            });
+        const page = await browser.newPage();
+        await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+        logStep('NEXT', 'Page loaded');
 
-            const page = await browser.newPage();
-            logStep('NEXT', `Going to ${TARGET_URL}...`);
-            await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-            logStep('NEXT', 'Page loaded');
-
-            // Step 1: Select calendar option
-            await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 15000 });
-            const optionExists = await page.$(`${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`);
-            if (optionExists) {
-                await page.select(CALENDAR_SELECTOR, CALENDAR_VALUE);
-                logStep('FIND', `Selected option ${CALENDAR_VALUE}`);
-                await sendToAll(`✅ Selected option ${CALENDAR_VALUE}`);
-            } else {
-                logStep('NOT FIND', `Option ${CALENDAR_VALUE} not found`);
-                await sendToAll(`❌ Option ${CALENDAR_VALUE} not found`);
-            }
-
-            // Step 2: Click Next three times
-            for (let i = 1; i <= 3; i++) {
-                await page.waitForSelector(NEXT_BUTTON_SELECTOR, { timeout: 15000 });
-                await page.click(NEXT_BUTTON_SELECTOR);
-                logStep('NEXT', `Clicked Next button (step ${i})`);
-                await sendToAll(`➡ Clicked Next button (step ${i})`);
-                await page.waitForTimeout(2000); // wait 2 sec between steps
-            }
-
-            // Step 3: Check final page for availability
-            const content = await page.content();
-            if (content.toLowerCase().includes('unfortunately')) {
-                logStep('NOT FIND', 'No appointments available yet');
-                await sendToAll('❌ No appointments available yet');
-            } else {
-                logStep('FIND', 'Appointments might be available!');
-                await sendToAll('✅ Appointments might be available! Check manually.');
-            }
-
-            logStep('BACK', 'Closing browser for this cycle');
-            await browser.close();
-            logStep('NEXT', `Waiting ${CHECK_INTERVAL / 1000} seconds until next cycle...`);
-        } catch (error) {
-            logStep('ERROR', error.message);
-            await sendToAll(`❌ Error: ${error.message}`);
-            if (browser) {
-                try { await browser.close(); } catch {}
-            }
-        } finally {
-            await delay(CHECK_INTERVAL);
+        // Step 1: Select calendar option once
+        await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 15000 });
+        const optionExists = await page.$(`${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`);
+        if (optionExists) {
+            await page.select(CALENDAR_SELECTOR, CALENDAR_VALUE);
+            logStep('FIND', `Selected option ${CALENDAR_VALUE}`);
+        } else {
+            logStep('NOT FIND', `Option ${CALENDAR_VALUE} not found`);
         }
+
+        let lastAvailable = false; // track if we already alerted
+
+        // =========================
+        // Main appointment checking loop
+        // =========================
+        while (true) {
+            try {
+                // Click Next → Next → Next
+                for (let i = 1; i <= 3; i++) {
+                    await page.waitForSelector(NEXT_BUTTON_SELECTOR, { timeout: 15000 });
+                    await page.click(NEXT_BUTTON_SELECTOR);
+                    logStep('NEXT', `Clicked Next button (step ${i})`);
+                    await delay(2000);
+                }
+
+                // Check final page for availability
+                const content = await page.content();
+                if (content.toLowerCase().includes('unfortunately')) {
+                    logStep('NOT FIND', 'No appointments available yet');
+                    lastAvailable = false; // reset flag
+                } else {
+                    logStep('FIND', 'Appointments might be available!');
+                    if (!lastAvailable) {
+                        // Only send Telegram once per new availability
+                        await sendToAll('✅ Appointments might be available! Check manually.');
+                        lastAvailable = true;
+                    }
+                }
+
+                // Click Back to restart loop
+                await page.waitForSelector(BACK_BUTTON_SELECTOR, { timeout: 15000 });
+                await page.click(BACK_BUTTON_SELECTOR);
+                logStep('BACK', 'Clicked Back button to restart flow');
+                await delay(2000);
+
+            } catch (err) {
+                logStep('ERROR', err.message);
+                await delay(CHECK_INTERVAL);
+            }
+        }
+
+    } catch (error) {
+        logStep('ERROR', error.message);
+        if (browser) try { await browser.close(); } catch {}
     }
 }
 
-logStep('START', 'Bot started. Checking website every minute...');
+logStep('START', 'Bot started. Looping through appointments...');
 run();
