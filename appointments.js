@@ -66,7 +66,7 @@ async function run() {
             const masterValue = await page.evaluate(() => {
                 const select = document.querySelector('tbody tr:nth-child(2) td select');
                 const found = Array.from(select.options)
-                    .find(opt => opt.textContent.toLowerCase().includes('Bachelor')); // change "bachelor" if needed
+                    .find(opt => opt.textContent.toLowerCase().includes('bachelor')); // change "bachelor" if needed
                 return found ? found.value : null;
             });
 
