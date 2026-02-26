@@ -9,7 +9,7 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 const telegramToken = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
 const telegramChatIds = [7379376037];
 
-const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo'; // replace with actual booking URL
+const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
 const CHECK_INTERVAL = 60000; // 1 minute
 const CALENDAR_VALUE = '44281520'; // Example: Bachelor student
 const CALENDAR_SELECTOR = '#CalendarId';
@@ -53,44 +53,49 @@ async function run() {
             logStep('NEXT', 'Starting new cycle...');
 
             browser = await puppeteer.launch({
-                headless: "new",
+                headless: 'new',
                 args: [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu"
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu'
                 ]
             });
 
             const page = await browser.newPage();
             logStep('NEXT', `Going to ${TARGET_URL}...`);
-            await page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 60000 });
+            await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
             logStep('NEXT', 'Page loaded');
 
-            // Wait for the calendar dropdown
-            await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 5000 });
-            logStep('FIND', `Dropdown ${CALENDAR_SELECTOR} found`);
-
-            // Check if the desired option exists
+            // Step 1: Select calendar option
+            await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 15000 });
             const optionExists = await page.$(`${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`);
             if (optionExists) {
                 await page.select(CALENDAR_SELECTOR, CALENDAR_VALUE);
-                logStep('FIND', `Selected option with value ${CALENDAR_VALUE}`);
-                await sendToAll(`✅ Selected option with value ${CALENDAR_VALUE}`);
+                logStep('FIND', `Selected option ${CALENDAR_VALUE}`);
+                await sendToAll(`✅ Selected option ${CALENDAR_VALUE}`);
             } else {
-                logStep('NOT FIND', `Option with value ${CALENDAR_VALUE} not found`);
-                await sendToAll(`❌ Option with value ${CALENDAR_VALUE} not found`);
+                logStep('NOT FIND', `Option ${CALENDAR_VALUE} not found`);
+                await sendToAll(`❌ Option ${CALENDAR_VALUE} not found`);
             }
 
-            // Click Next
-            const nextButton = await page.$(NEXT_BUTTON_SELECTOR);
-            if (nextButton) {
-                await nextButton.click();
-                logStep('NEXT', 'Clicked Next button');
-                await sendToAll(`➡ Clicked Next button`);
+            // Step 2: Click Next three times
+            for (let i = 1; i <= 3; i++) {
+                await page.waitForSelector(NEXT_BUTTON_SELECTOR, { timeout: 15000 });
+                await page.click(NEXT_BUTTON_SELECTOR);
+                logStep('NEXT', `Clicked Next button (step ${i})`);
+                await sendToAll(`➡ Clicked Next button (step ${i})`);
+                await page.waitForTimeout(2000); // wait 2 sec between steps
+            }
+
+            // Step 3: Check final page for availability
+            const content = await page.content();
+            if (content.toLowerCase().includes('unfortunately')) {
+                logStep('NOT FIND', 'No appointments available yet');
+                await sendToAll('❌ No appointments available yet');
             } else {
-                logStep('NOT FIND', 'Next button not found');
-                await sendToAll(`❌ Next button not found`);
+                logStep('FIND', 'Appointments might be available!');
+                await sendToAll('✅ Appointments might be available! Check manually.');
             }
 
             logStep('BACK', 'Closing browser for this cycle');
