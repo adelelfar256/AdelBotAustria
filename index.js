@@ -2,7 +2,8 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
-
+console.log("TELEGRAM_TOKEN:", process.env.TELEGRAM_TOKEN ? "✅ Set" : "❌ Not Set");
+console.log("TELEGRAM_CHAT_IDS:", process.env.TELEGRAM_CHAT_IDS);
 /* =========================
    CONFIG (FROM ENV)
 ========================= */
