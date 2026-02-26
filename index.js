@@ -13,15 +13,16 @@ if (!telegramToken) {
     process.exit(1);
 }
 
-// Load chat IDs from ENV (comma separated)
-let telegramChatIds = [];
+const CHECK_INTERVAL = Number(process.env.CHECK_INTERVAL) || 60000;
 
-if (process.env.TELEGRAM_CHAT_IDS) {
-    telegramChatIds = process.env.TELEGRAM_CHAT_IDS
-        .split(',')
-        .map(id => id.trim())
-        .filter(Boolean)
-        .map(id => Number(id));
+let telegramChatIds = (process.env.TELEGRAM_CHAT_IDS || "")
+    .split(',')
+    .map(id => id.trim())
+    .filter(Boolean)
+    .map(Number);
+
+if (!telegramChatIds.length) {
+    console.warn("⚠️ No TELEGRAM_CHAT_IDS configured.");
 }
 
 console.log("Loaded chat IDs:", telegramChatIds);
@@ -32,7 +33,7 @@ console.log("Loaded chat IDs:", telegramChatIds);
 
 const bot = new TelegramBot(telegramToken, { polling: true });
 
-// Auto-restart polling if error
+// Restart polling if it crashes
 bot.on('polling_error', async (error) => {
     console.error('Polling error:', error.message || error);
     try {
@@ -41,17 +42,6 @@ bot.on('polling_error', async (error) => {
         await bot.startPolling();
     } catch (err) {
         console.error("Failed to restart polling:", err.message);
-    }
-});
-
-// Auto-subscribe new users
-bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-
-    if (!telegramChatIds.includes(chatId)) {
-        telegramChatIds.push(chatId);
-        bot.sendMessage(chatId, "✅ You are now subscribed.");
-        console.log("New subscriber:", chatId);
     }
 });
 
@@ -88,23 +78,30 @@ async function run() {
         let browser;
 
         try {
+            console.log("Checking website...");
+
             browser = await puppeteer.launch({
                 headless: "new",
-                args: ["--no-sandbox", "--disable-setuid-sandbox"]
+                args: [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ]
             });
 
             const page = await browser.newPage();
-
-            // Example target (replace with your booking URL)
-            await page.goto('https://example.com', {
-                waitUntil: 'networkidle0'
+            await page.goto(TARGET_URL, {
+                waitUntil: "networkidle2",
+                timeout: 60000
             });
 
             await sendToAll("✅ Bot checked the website successfully.");
 
-            await browser.close();
+            console.log("Check complete.");
         } catch (error) {
             console.error("Main loop error:", error.message);
+            await sendToAll(`❌ Error: ${error.message}`);
         } finally {
             if (browser) {
                 try {
@@ -112,8 +109,7 @@ async function run() {
                 } catch {}
             }
 
-            // Wait before next cycle
-            await delay(60000); // 1 minute
+            await delay(CHECK_INTERVAL);
         }
     }
 }
