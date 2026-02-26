@@ -1,135 +1,112 @@
 const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
-const path = require('path');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// --- Hardcoded configs ---
-const TELEGRAM_TOKEN = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
-const TELEGRAM_CHAT_IDS_FILE = 'chat_ids.json';
-const APPOINTMENT_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
+// =========================
+// CONFIG (HARDCODED)
+// =========================
+const telegramToken = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
+const telegramChatIds = [7379376037];
 
-let telegramChatIds = [];
-if (fs.existsSync(TELEGRAM_CHAT_IDS_FILE)) {
-    try {
-        telegramChatIds = JSON.parse(fs.readFileSync(TELEGRAM_CHAT_IDS_FILE, 'utf8'));
-    } catch (err) {
-        console.error('Failed to read chat IDs:', err.message);
-    }
-}
+const TARGET_URL = 'https://example.com'; // replace with actual booking URL
+const CHECK_INTERVAL = 60000; // 1 minute
+const CALENDAR_VALUE = '44281520'; // Example: Bachelor student
+const CALENDAR_SELECTOR = '#CalendarId';
+const NEXT_BUTTON_SELECTOR = 'input[name="Command"][value="Next"]';
 
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+// =========================
+// TELEGRAM BOT
+// =========================
+const bot = new TelegramBot(telegramToken, { polling: true });
 
-// Save chat IDs
-function saveChatIds() {
-    fs.writeFileSync(TELEGRAM_CHAT_IDS_FILE, JSON.stringify(telegramChatIds, null, 2));
-}
-
-// Listen for new subscribers
-bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    if (!telegramChatIds.includes(chatId)) {
-        telegramChatIds.push(chatId);
-        saveChatIds();
-        bot.sendMessage(chatId, `✅ You are now subscribed to appointment updates!`);
-        console.log(`New subscriber: ${chatId}`);
-    }
+bot.on('polling_error', (error) => {
+    console.error('Polling error:', error.message || error);
 });
 
-// Send message to all subscribers
 async function sendToAll(message) {
     for (const id of telegramChatIds) {
         try {
             await bot.sendMessage(id, message);
+            console.log(`[TELEGRAM] Sent to ${id}: ${message}`);
         } catch (err) {
-            console.error(`Failed to send message to ${id}:`, err.message);
+            console.error(`[TELEGRAM] Failed to send to ${id}:`, err.message);
         }
     }
 }
 
-// --- Puppeteer logic ---
+// =========================
+// LOG HELPER
+// =========================
+function logStep(step, extra = '') {
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`[${timestamp}] [${step}] ${extra}`);
+}
+
+// =========================
+// MAIN LOOP
+// =========================
 async function run() {
     while (true) {
         let browser;
         try {
+            logStep('NEXT', 'Starting new cycle...');
+
             browser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-gpu']
+                headless: "new",
+                args: [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ]
             });
 
             const page = await browser.newPage();
-            await page.goto(APPOINTMENT_URL, { waitUntil: 'networkidle0' });
+            logStep('NEXT', `Going to ${TARGET_URL}...`);
+            await page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 60000 });
+            logStep('NEXT', 'Page loaded');
 
-            // --- Select the right option (like "bachelor") ---
-            await page.waitForSelector('tbody tr:nth-child(2) td select');
-            const masterValue = await page.evaluate(() => {
-                const select = document.querySelector('tbody tr:nth-child(2) td select');
-                const found = Array.from(select.options)
-                    .find(opt => opt.textContent.toLowerCase().includes('bachelor')); // change "bachelor" if needed
-                return found ? found.value : null;
-            });
+            // Wait for the calendar dropdown
+            await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 5000 });
+            logStep('FIND', `Dropdown ${CALENDAR_SELECTOR} found`);
 
-            if (!masterValue) {
-                console.log('No matching dropdown option found.');
-                await browser.close();
-                await delay(60 * 1000); // wait 1 min before retry
-                continue;
-            }
-
-            await page.select('tbody tr:nth-child(2) td select', masterValue);
-
-            // --- Click Next a few times, handle "unfortunately" ---
-            const clickNext = async () => {
-                const buttons = await page.$$('input[type="submit"]');
-                for (const btn of buttons) {
-                    const val = await (await btn.getProperty('value')).jsonValue();
-                    if (val.toLowerCase() === 'next' || val === 'التالى') {
-                        await Promise.all([
-                            page.waitForNavigation({ waitUntil: 'networkidle0' }),
-                            btn.click()
-                        ]);
-                        return true;
-                    }
-                }
-                return false;
-            };
-
-            const loopUntilNoUnfortunately = async () => {
-                while (true) {
-                    const bodyText = await page.evaluate(() => document.body.innerText.toLowerCase());
-                    if (!bodyText.includes('unfortunately')) break;
-                    const nextClicked = await clickNext();
-                    if (!nextClicked) break;
-                }
-            };
-
-            for (let i = 0; i < 3; i++) {
-                const ok = await clickNext();
-                if (!ok) break;
-                await loopUntilNoUnfortunately();
-            }
-
-            // --- Check for radio buttons (appointment availability) ---
-            await page.waitForSelector('input[type="radio"]', { timeout: 5000 }).catch(() => null);
-            const radios = await page.$$('input[type="radio"]');
-            if (radios.length > 0) {
-                await sendToAll(`📅 Appointment available! Check: ${APPOINTMENT_URL}`);
-                console.log('✅ Appointment available, message sent!');
+            // Check if the desired option exists
+            const optionExists = await page.$(`${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`);
+            if (optionExists) {
+                await page.select(CALENDAR_SELECTOR, CALENDAR_VALUE);
+                logStep('FIND', `Selected option with value ${CALENDAR_VALUE}`);
+                await sendToAll(`✅ Selected option with value ${CALENDAR_VALUE}`);
             } else {
-                console.log('No appointments available yet.');
+                logStep('NOT FIND', `Option with value ${CALENDAR_VALUE} not found`);
+                await sendToAll(`❌ Option with value ${CALENDAR_VALUE} not found`);
             }
 
-        } catch (err) {
-            console.error('Error during run:', err.message);
-        } finally {
-            if (browser) await browser.close();
-        }
+            // Click Next
+            const nextButton = await page.$(NEXT_BUTTON_SELECTOR);
+            if (nextButton) {
+                await nextButton.click();
+                logStep('NEXT', 'Clicked Next button');
+                await sendToAll(`➡ Clicked Next button`);
+            } else {
+                logStep('NOT FIND', 'Next button not found');
+                await sendToAll(`❌ Next button not found`);
+            }
 
-        // Wait before next check
-        await delay(60 * 1000); // 1 minute
+            logStep('BACK', 'Closing browser for this cycle');
+            await browser.close();
+            logStep('NEXT', `Waiting ${CHECK_INTERVAL / 1000} seconds until next cycle...`);
+        } catch (error) {
+            logStep('ERROR', error.message);
+            await sendToAll(`❌ Error: ${error.message}`);
+            if (browser) {
+                try { await browser.close(); } catch {}
+            }
+        } finally {
+            await delay(CHECK_INTERVAL);
+        }
     }
 }
 
-// Start the bot
+logStep('START', 'Bot started. Checking website every minute...');
 run();
