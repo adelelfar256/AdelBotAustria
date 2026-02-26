@@ -1,118 +1,50 @@
-const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 
-const delay = ms => new Promise(res => setTimeout(res, ms));
-console.log("TELEGRAM_TOKEN:", process.env.TELEGRAM_TOKEN ? "✅ Set" : "❌ Not Set");
-console.log("TELEGRAM_CHAT_IDS:", process.env.TELEGRAM_CHAT_IDS);
-/* =========================
-   CONFIG (FROM ENV)
-========================= */
+// =========================
+// CONFIG (HARDCODED)
+// =========================
 
-const telegramToken = process.env.TELEGRAM_TOKEN;
-if (!telegramToken) {
-    console.error("❌ TELEGRAM_TOKEN is not set.");
-    process.exit(1);
-}
+// Your Telegram bot token
+const telegramToken = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
 
-const CHECK_INTERVAL = Number(process.env.CHECK_INTERVAL) || 60000;
+// Your chat IDs (can be multiple)
+const telegramChatIds = [7379376037];
 
-let telegramChatIds = (process.env.TELEGRAM_CHAT_IDS || "")
-    .split(',')
-    .map(id => id.trim())
-    .filter(Boolean)
-    .map(Number);
+// Interval in milliseconds (1 minute)
+const INTERVAL = 60000;
 
-if (!telegramChatIds.length) {
-    console.warn("⚠️ No TELEGRAM_CHAT_IDS configured.");
-}
-
-console.log("Loaded chat IDs:", telegramChatIds);
-
-/* =========================
-   TELEGRAM BOT
-========================= */
+// =========================
+// TELEGRAM BOT
+// =========================
 
 const bot = new TelegramBot(telegramToken, { polling: true });
 
-// Restart polling if it crashes
-bot.on('polling_error', async (error) => {
+bot.on('polling_error', (error) => {
     console.error('Polling error:', error.message || error);
-    try {
-        await bot.stopPolling();
-        await delay(2000);
-        await bot.startPolling();
-    } catch (err) {
-        console.error("Failed to restart polling:", err.message);
-    }
 });
 
-/* =========================
-   HELPERS
-========================= */
+// =========================
+// HELPER TO SEND MESSAGE
+// =========================
 
 async function sendToAll(message) {
     for (const id of telegramChatIds) {
         try {
             await bot.sendMessage(id, message);
+            console.log(`Sent to ${id}: ${message}`);
         } catch (err) {
             console.error(`Failed to send to ${id}:`, err.message);
         }
     }
 }
 
-async function sendPhotoToAll(photoPath, options = {}) {
-    for (const id of telegramChatIds) {
-        try {
-            await bot.sendPhoto(id, photoPath, options);
-        } catch (err) {
-            console.error(`Failed to send photo to ${id}:`, err.message);
-        }
-    }
-}
+// =========================
+// MAIN LOOP
+// =========================
 
-/* =========================
-   MAIN LOOP
-========================= */
+console.log("Bot started. Sending test messages every minute...");
 
-async function run() {
-    while (true) {
-        let browser;
-
-        try {
-            console.log("Checking website...");
-
-            browser = await puppeteer.launch({
-                headless: "new",
-                args: [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu"
-                ]
-            });
-
-            const page = await browser.newPage();
-            await page.goto(TARGET_URL, {
-                waitUntil: "networkidle2",
-                timeout: 60000
-            });
-
-            await sendToAll("✅ Bot checked the website successfully.");
-
-            console.log("Check complete.");
-        } catch (error) {
-            console.error("Main loop error:", error.message);
-            await sendToAll(`❌ Error: ${error.message}`);
-        } finally {
-            if (browser) {
-                try {
-                    await browser.close();
-                } catch {}
-            }
-
-            await delay(CHECK_INTERVAL);
-        }
-    }
-}
-
-run();
+setInterval(() => {
+    const timestamp = new Date().toLocaleTimeString();
+    sendToAll(`⏰ Test message at ${timestamp}`);
+}, INTERVAL);
