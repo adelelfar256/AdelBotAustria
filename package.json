@@ -6,7 +6,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "puppeteer": "^21.3.8",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "puppeteer": "^22.0.0"
   }
 }
