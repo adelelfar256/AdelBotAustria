@@ -6,8 +6,8 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 // =========================
 // CONFIG (HARDCODED)
 // =========================
-const telegramToken = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
-const telegramChatIds = [7379376037];
+const telegramToken = 'zzzzzzz7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
+const telegramChatIds = [77777777379376037];
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
 const CHECK_INTERVAL = 60000; // 1 minute
