@@ -6,7 +6,7 @@ const path = require('path');
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 // --- Hardcoded configs ---
-const TELEGRAM_TOKEN = '704435445455472335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
+const TELEGRAM_TOKEN = '7044372335:AAFotpWDVLTEUHpw1d8pkvoG_UQoXqJxy68';
 const TELEGRAM_CHAT_IDS_FILE = 'chat_ids.json';
 const APPOINTMENT_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 
