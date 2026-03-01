@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
-    "puppeteer": "^22.0.0",
-    "node-telegram-bot-api": "^0.65.0"
+    "node-telegram-bot-api": "^0.64.0",
+    "puppeteer": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

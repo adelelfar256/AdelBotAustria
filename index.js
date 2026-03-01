@@ -115,11 +115,18 @@ async function runFlow() {
             }
         }
 
-        browser = await puppeteer.launch({
-            headless: isRailway ? "new" : false, 
-            executablePath: chromePath,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+browser = await puppeteer.launch({
+    headless: isRailway ? "new" : false,
+    // NO executablePath here - let Puppeteer use the one it installed in postinstall
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process', // Better for low-RAM environments like Railway
+        '--no-zygote'
+    ]
+});
 
         currentPage = await browser.newPage();
         await currentPage.setViewport({ width: 1280, height: 1000 });
