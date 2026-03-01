@@ -2,30 +2,33 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // =========================
-// CONFIG
+// CONFIG & STATE
 // =========================
 const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
-const CHECK_INTERVAL = 15000; // Increased for Railway stability
+const CHECK_INTERVAL = 15000; 
 
 const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 const usersPath = path.join(__dirname, 'users.json');
 
 let users = {};
 if (fs.existsSync(usersPath)) {
-    users = JSON.parse(fs.readFileSync(usersPath));
+    try { users = JSON.parse(fs.readFileSync(usersPath)); } catch (e) { users = {}; }
 }
 
 let currentPage = null; 
+let isWaitingForCaptcha = false;
+
 const bot = new TelegramBot(telegramToken, { 
     polling: { params: { drop_pending_updates: true } } 
 });
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// Helper for logging to both Console and Telegram
+// Helper: Logs to Terminal AND Telegram
 async function superLog(message) {
     const timestamp = new Date().toLocaleTimeString();
     const msg = `[${timestamp}] ${message}`;
@@ -50,7 +53,7 @@ bot.on('message', async (msg) => {
 
             const exists = await currentPage.$(inputSelector);
             if (exists) {
-                await superLog(`⌨️ Typing CAPTCHA: ${text}`);
+                await superLog(`⌨️ Typing CAPTCHA: ${text}...`);
                 await currentPage.click(inputSelector);
                 await currentPage.click(inputSelector, { clickCount: 3 });
                 await currentPage.keyboard.press('Backspace');
@@ -62,6 +65,7 @@ bot.on('message', async (msg) => {
                 await delay(500); 
                 await superLog("🖱 Auto-clicking Next button...");
                 await currentPage.click(submitSelector);
+                isWaitingForCaptcha = false; // Release the flow
             }
         } catch (e) {
             await superLog(`❌ Error in auto-submit: ${e.message}`);
@@ -69,22 +73,44 @@ bot.on('message', async (msg) => {
     }
 });
 
+// =========================
+// BROWSER UTILITIES
+// =========================
 async function waitAndClickNext(page, stepName) {
     const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
     try {
-        await superLog(`Step: ${stepName} - Waiting for 'Next' button...`);
         await page.waitForSelector(selector, { visible: true, timeout: 15000 });
-        
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
             page.click(selector)
         ]);
-        await superLog(`Step: ${stepName} - ✅ Done.`);
+        await superLog(`✅ Step ${stepName} completed.`);
         return true;
     } catch (e) {
-        await superLog(`Step: ${stepName} - ❌ Failed: ${e.message}`);
+        await superLog(`❌ Step ${stepName} failed.`);
         return false;
     }
+}
+
+async function fillFormForUser(page, userData) {
+    await superLog(`📝 Filling form for ${userData.firstName}...`);
+    await page.evaluate((data) => {
+        const setVal = (sel, val) => {
+            const el = document.querySelector(sel);
+            if (el && val) {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        };
+        setVal('#Lastname', data.lastName);
+        setVal('#Firstname', data.firstName);
+        setVal('#DateOfBirth', data.dob);
+        setVal('#Email', data.email);
+        setVal('#TraveldocumentNumber', data.passportNumber);
+        const cb = document.querySelector('input[name="DSGVOAccepted"]');
+        if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+    }, userData);
 }
 
 // =========================
@@ -93,85 +119,79 @@ async function waitAndClickNext(page, stepName) {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway/Headless' : 'Local/Headed'})`);
-        
-browser = await puppeteer.launch({
-    headless: isRailway ? "new" : false,
-    // FORCE the path so it doesn't look in the cache
-    executablePath: isRailway ? '/usr/bin/google-chrome' : null, 
-    defaultViewport: { width: 1280, height: 800 },
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-    ]
-});
+        await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway' : 'Local'})`);
+
+        // Find Chrome path on Railway
+        let chromePath = null;
+        if (isRailway) {
+            try {
+                chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim();
+            } catch (e) {
+                chromePath = '/usr/bin/google-chrome-stable';
+            }
+        }
+
+        browser = await puppeteer.launch({
+            headless: isRailway ? "new" : false, 
+            executablePath: chromePath,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
 
         currentPage = await browser.newPage();
-        await superLog(`🌐 Navigating to BMEIA...`);
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        await superLog(`🔎 Checking for Calendar dropdown...`);
-        await currentPage.waitForSelector('#CalendarId', { timeout: 20000 });
-        
+        await currentPage.waitForSelector('#CalendarId');
         const masterValue = await currentPage.evaluate((search) => {
-            const sel = document.querySelector('#CalendarId');
-            const opt = Array.from(sel.options).find(o => o.textContent.toLowerCase().includes(search.toLowerCase()));
+            const opt = [...document.querySelector('#CalendarId').options].find(o => o.text.includes(search));
             return opt ? opt.value : null;
         }, CALENDAR_SEARCH);
 
-        if (masterValue) {
-            await superLog(`✅ Dropdown option found. Selecting...`);
-            await currentPage.select('#CalendarId', masterValue);
-        } else {
-            throw new Error(`Could not find "${CALENDAR_SEARCH}" in dropdown.`);
-        }
+        if (masterValue) await currentPage.select('#CalendarId', masterValue);
 
-        // Navigate the 3 initial steps
         for (let i = 1; i <= 3; i++) {
-            const success = await waitAndClickNext(currentPage, `Initial Click ${i}`);
-            if (!success) throw new Error(`Failed at initial step ${i}`);
+            await waitAndClickNext(currentPage, i);
         }
 
-        await superLog(`📡 Scanning for available radio slots...`);
         const radios = await currentPage.$$('input[type="radio"]');
-        
         if (radios.length > 0) {
-            await superLog(`✨ SLOT FOUND! ${radios.length} options available.`);
+            await superLog(`✨ SLOT FOUND! Selecting...`);
             await radios[0].click();
-            await delay(800);
-            await waitAndClickNext(currentPage, "Radio Selection Next");
+            await delay(500);
+            await waitAndClickNext(currentPage, "Radio Selection");
 
             const firstUserKey = Object.keys(users)[0];
             if (firstUserKey) {
-                await superLog(`📝 Filling form for user: ${firstUserKey}`);
-                // [Your fillFormForUser function logic here]
-                // ...
-                await superLog(`📸 Capturing form and sending to Telegram...`);
-                // [Your captureAndSendForm function logic here]
+                await fillFormForUser(currentPage, users[firstUserKey]);
+                
+                // Screenshot and Wait
+                const screenshotPath = path.join(__dirname, 'form.png');
+                await currentPage.screenshot({ path: screenshotPath, fullPage: true });
+                await bot.sendPhoto(firstUserKey, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
+                
+                isWaitingForCaptcha = true;
+                await superLog("⏳ Waiting for your Telegram reply...");
+                
+                // Infinite wait until CAPTCHA is handled to prevent script restart
+                while (isWaitingForCaptcha) {
+                    await delay(5000);
+                }
             }
         } else {
-            await superLog('😴 No slots found. Closing browser and cooling down...');
+            await superLog('😴 No slots. Retrying...');
             await browser.close();
             await delay(CHECK_INTERVAL);
             return runFlow();
         }
 
     } catch (err) {
-        await superLog(`🚨 CRITICAL ERROR: ${err.message}`);
+        await superLog(`🚨 ERROR: ${err.message}`);
         if (browser) await browser.close();
-        await superLog(`⏳ Waiting 30s before full restart to clear 409 conflict...`);
         await delay(30000); 
         runFlow();
     }
 }
 
-// Global Conflict Watcher
-bot.on('polling_error', (err) => {
-    if (err.code === 'ETELEGRAM' && err.message.includes('409')) {
-        console.log("409 Conflict - Polling already active.");
-    }
-});
+// 409 Conflict Protection
+bot.on('polling_error', (err) => { if (!err.message.includes('409')) console.error(err); });
 
 runFlow();
