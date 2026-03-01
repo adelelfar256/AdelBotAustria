@@ -6,7 +6,7 @@ const path = require('path');
 // =========================
 // CONFIG
 // =========================
-const telegramToken = '7044372335:AAEXrhJfADVi4nme9oo8ktJcb_6Yqeltp7E';
+const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
 const CHECK_INTERVAL = 6000; 
