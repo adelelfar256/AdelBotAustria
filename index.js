@@ -42,8 +42,7 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 // Suppress 409 Conflict errors
 bot.on('polling_error', (err) => {
     if (err.code === 'ETELEGRAM' && err.response?.body?.error_code === 409) {
-        // Ignore 409 conflicts
-        return;
+        return; // ignore 409 errors
     }
     console.error('[polling_error]', err);
 });
@@ -163,8 +162,8 @@ async function runFlow() {
             }
 
         } catch (err) {
-            logStep('ERROR', err.message);
-            await sendToAll(`❌ Error: ${err.message} — restarting flow`);
+            logStep('ERROR', err.message); // only log locally
+            // do NOT send errors to Telegram
             if (browser) try { await browser.close(); } catch {}
             logStep('WAIT', `Retrying in ${CHECK_INTERVAL / 1000}s`);
             await delay(CHECK_INTERVAL);
