@@ -1,6 +1,7 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core'); // use core for cloud
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const path = require('path');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
@@ -8,7 +9,7 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 // CONFIG
 // =========================
 const telegramToken = '7044372335:AAEXrhJfADVi4nme9oo8ktJcb_6Yqeltp7E';
-const USERS_FILE = './users.json';
+const USERS_FILE = path.join(__dirname, 'users.json');
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
 const CHECK_INTERVAL = 10000;
@@ -18,7 +19,7 @@ const NEXT_BUTTON_SELECTOR = 'input[name="Command"][value="Next"]';
 const BACK_BUTTON_SELECTOR = 'input[name="Command"][value="Back"]';
 
 // =========================
-// USER STORAGE (NO DB)
+// USERS STORAGE (JSON)
 // =========================
 let users = new Set();
 
@@ -36,11 +37,9 @@ function saveUsers() {
 // =========================
 const bot = new TelegramBot(telegramToken, { polling: true });
 
-bot.on('polling_error', err =>
-    console.error('Telegram polling error:', err.message)
-);
+bot.on('polling_error', err => console.error('Telegram polling error:', err.message));
 
-// Register user
+// /start command
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
 
@@ -53,7 +52,7 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, "✅ You are now subscribed to appointment alerts.");
 });
 
-// Unsubscribe
+// /stop command
 bot.onText(/\/stop/, (msg) => {
     const chatId = msg.chat.id;
 
@@ -64,20 +63,20 @@ bot.onText(/\/stop/, (msg) => {
     }
 });
 
-// Send to all users
+// Send to all registered users
 async function sendToAll(message) {
     for (const id of users) {
         try {
             await bot.sendMessage(id, message);
-            console.log(`Sent to ${id}`);
+            console.log(`[TELEGRAM] Sent to ${id}`);
         } catch (err) {
-            console.error(`Failed to send to ${id}:`, err.message);
+            console.error(`[TELEGRAM] Failed to send to ${id}:`, err.message);
         }
     }
 }
 
 // =========================
-// LOG HELPER
+// LOGGING
 // =========================
 function logStep(step, extra = '') {
     const timestamp = new Date().toLocaleTimeString();
@@ -85,38 +84,29 @@ function logStep(step, extra = '') {
 }
 
 // =========================
-// MONITOR FUNCTION
+// PUPPETEER FLOW
 // =========================
 async function runFlow() {
     while (true) {
         let browser;
 
         try {
-            logStep('START', 'Starting new flow...');
+            logStep('START', 'Launching Puppeteer...');
 
             browser = await puppeteer.launch({
                 headless: true,
-                executablePath: '/usr/bin/google-chrome-stable', // or '/usr/bin/chromium-browser'
+                executablePath: '/usr/bin/chromium-browser', // Render / Railway Chromium
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             });
 
             const page = await browser.newPage();
-            await page.goto(TARGET_URL, {
-                waitUntil: 'networkidle2',
-                timeout: 60000
-            });
-
-            logStep('PAGE', 'Loaded');
+            await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+            logStep('PAGE', 'Page loaded');
 
             await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 20000 });
 
-            const optionExists = await page.$(
-                `${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`
-            );
-
-            if (!optionExists) {
-                throw new Error(`Calendar option ${CALENDAR_VALUE} not found`);
-            }
+            const optionExists = await page.$(`${CALENDAR_SELECTOR} option[value="${CALENDAR_VALUE}"]`);
+            if (!optionExists) throw new Error(`Calendar option ${CALENDAR_VALUE} not found`);
 
             await page.select(CALENDAR_SELECTOR, CALENDAR_VALUE);
             logStep('SELECT', 'Calendar selected');
@@ -137,11 +127,10 @@ async function runFlow() {
                 const content = await page.content();
 
                 if (content.toLowerCase().includes('unfortunately')) {
-                    logStep('STATUS', 'No appointments');
+                    logStep('STATUS', 'No appointments available');
                     lastAvailable = false;
                 } else {
-                    logStep('STATUS', 'Appointments might be available');
-
+                    logStep('STATUS', 'Appointments might be available!');
                     if (!lastAvailable) {
                         await sendToAll('✅ Appointments might be available! Check manually.');
                         lastAvailable = true;
@@ -149,13 +138,10 @@ async function runFlow() {
                 }
 
                 const backButton = await page.$(BACK_BUTTON_SELECTOR);
-
-                if (!backButton) {
-                    throw new Error('Back button not found');
-                }
+                if (!backButton) throw new Error('Back button not found');
 
                 await backButton.click();
-                logStep('BACK', 'Restarting flow');
+                logStep('BACK', 'Restarting flow...');
                 await delay(2000);
 
                 firstRun = false;
@@ -163,7 +149,7 @@ async function runFlow() {
 
         } catch (err) {
             logStep('ERROR', err.message);
-            await sendToAll(`❌ Error: ${err.message}`);
+            await sendToAll(`❌ Error: ${err.message} — restarting flow`);
 
             if (browser) {
                 try { await browser.close(); } catch {}
@@ -176,7 +162,7 @@ async function runFlow() {
 }
 
 // =========================
-// START EVERYTHING
+// START BOT & FLOW
 // =========================
 logStep('BOT', 'Bot started...');
 runFlow();
