@@ -157,12 +157,21 @@ async function fillFormForUser(page, userData) {
 async function runFlow() {
     let browser;
     try {
-        browser = await puppeteer.launch({
-            headless: false,
-            defaultViewport: null,
-            args: ['--no-sandbox', '--start-maximized']
-        });
+       const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 
+browser = await puppeteer.launch({
+    // Headless MUST be true on Railway, false locally for you to see it
+    headless: isRailway ? "new" : false, 
+    defaultViewport: null,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        // Start maximized only locally
+        isRailway ? '' : '--start-maximized' 
+    ].filter(arg => arg !== '')
+});
         currentPage = await browser.newPage();
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2' });
 
