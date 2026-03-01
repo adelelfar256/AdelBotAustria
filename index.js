@@ -11,6 +11,9 @@ const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
 const CHECK_INTERVAL = 6000; 
 
+// Detection for Railway Environment
+const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
+
 const usersPath = path.join(__dirname, 'users.json');
 let users = {};
 let setupState = { active: false, step: 0, data: {}, chatId: null };
@@ -40,7 +43,7 @@ const QUESTIONS = [
 ];
 
 if (fs.existsSync(usersPath)) {
-    users = JSON.parse(fs.readFileSync(usersPath));
+    try { users = JSON.parse(fs.readFileSync(usersPath)); } catch (e) { users = {}; }
 }
 
 const bot = new TelegramBot(telegramToken, { polling: true });
@@ -50,92 +53,81 @@ const delay = ms => new Promise(res => setTimeout(res, ms));
 // COMMANDS
 // =========================
 bot.onText(/\/help/, (msg) => {
-    bot.sendMessage(msg.chat.id, "📖 *Commands:*\n/update - Set your info\n/restart - Fix/Start search\n/status - See active tabs", { parse_mode: 'Markdown' });
+    const helpText = "📖 *Bot Guide:*\n\n" +
+        "/update - Add/Change your data step-by-step\n" +
+        "/restart - Force restart the browser tabs\n" +
+        "/status - See which users are currently searching\n" +
+        "Reply to a form photo with the CAPTCHA to submit.";
+    bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/status/, (msg) => {
-    const activeIds = Object.keys(userPages).join('\n');
-    bot.sendMessage(msg.chat.id, `📊 *Status:*\nActive Tabs for IDs:\n${activeIds || 'None'}`, { parse_mode: 'Markdown' });
+    const active = Object.keys(userPages).join('\n') || 'None';
+    bot.sendMessage(msg.chat.id, `📊 *Active Tabs:*\n${active}`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/restart/, async (msg) => {
-    await bot.sendMessage(msg.chat.id, "🔄 Restarting... please wait.");
+    bot.sendMessage(msg.chat.id, "🔄 Restarting browser engine...");
     if (browser) await browser.close();
-    userPages = {}; // Clear old tab references
+    userPages = {};
     runFlow();
 });
 
 // =========================
-// THE TELEGRAM LISTENER (FIXED CAPTCHA)
+// TELEGRAM MESSAGE HANDLER
 // =========================
 bot.on('message', async (msg) => {
     const text = msg.text;
     const chatId = msg.chat.id.toString();
     if (!text || text.startsWith('/')) return;
 
-    // 1. Setup Wizard
+    // 1. Data Setup Interview
     if (setupState.active && setupState.chatId === chatId) {
         setupState.data[QUESTIONS[setupState.step].key] = text;
         setupState.step++;
         if (setupState.step < QUESTIONS.length) {
-            return bot.sendMessage(chatId, `${setupState.step + 1}. ${QUESTIONS[setupState.step].label} ${QUESTIONS[setupState.step].hint || ''}?`);
+            const next = QUESTIONS[setupState.step];
+            return bot.sendMessage(chatId, `${setupState.step + 1}. ${next.label} ${next.hint || ''}?`);
         } else {
             users[chatId] = setupState.data;
             fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
             setupState.active = false;
-            return bot.sendMessage(chatId, "✅ Data saved! Use /restart to open your personal tab.");
+            return bot.sendMessage(chatId, "✅ Data saved! Send /restart to start your search.");
         }
     }
 
-    // 2. CAPTCHA REPLY (FIXED LOGIC)
+    // 2. CAPTCHA Processing
     if (msg.reply_to_message && msg.reply_to_message.caption && msg.reply_to_message.caption.includes("FORM")) {
-        const myPage = userPages[chatId];
-        
-        if (!myPage || myPage.isClosed()) {
-            return bot.sendMessage(chatId, "❌ Your browser tab is lost. Send /restart to fix it.");
-        }
+        const page = userPages[chatId];
+        if (!page) return bot.sendMessage(chatId, "❌ No active tab found. Try /restart.");
 
         try {
-            console.log(`[ACTION] User ${chatId} sent CAPTCHA. Typing...`);
-            const inputSelector = '#CaptchaText';
-            const submitSelector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+            const input = '#CaptchaText';
+            const btn = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
 
-            // Bring tab to front
-            await myPage.bringToFront();
+            await page.bringToFront();
+            await page.click(input, { clickCount: 3 });
+            await page.keyboard.press('Backspace');
+            for (const c of text) await page.type(input, c.toUpperCase(), { delay: 40 });
             
-            // Focus and Clear
-            await myPage.waitForSelector(inputSelector, { visible: true });
-            await myPage.click(inputSelector, { clickCount: 3 });
-            await myPage.keyboard.press('Backspace');
-
-            // Type code
-            for (const char of text) {
-                await myPage.type(inputSelector, char.toUpperCase(), { delay: 50 });
-            }
-            
-            // Auto-click Next
             await Promise.all([
-                myPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
-                myPage.click(submitSelector)
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {}),
+                page.click(btn)
             ]);
 
-            // Check for Errors
-            const errorText = await myPage.evaluate(() => {
+            const err = await page.evaluate(() => {
                 const el = document.querySelector('.validation-summary-errors');
                 return el ? el.innerText.trim() : null;
             });
 
-            if (errorText) {
-                const errImg = path.join(__dirname, `err_${chatId}.png`);
-                await myPage.screenshot({ path: errImg });
-                await bot.sendPhoto(chatId, errImg, { caption: `❌ REJECTED:\n${errorText}\n\nType the new code.` });
+            if (err) {
+                const p = path.join(__dirname, `err_${chatId}.png`);
+                await page.screenshot({ path: p });
+                await bot.sendPhoto(chatId, p, { caption: `❌ Error:\n${err}\n\nType new code.` });
             } else {
-                await bot.sendMessage(chatId, "🚀 SUCCESS! If the page changed, you are booked. Check your email.");
+                await bot.sendMessage(chatId, "🚀 Submitted! Check email for confirmation.");
             }
-        } catch (e) {
-            console.error(e);
-            bot.sendMessage(chatId, "⚠️ Browser error while typing. Try /restart.");
-        }
+        } catch (e) { bot.sendMessage(chatId, "⚠️ Browser Error. Try /restart."); }
     }
 });
 
@@ -145,95 +137,86 @@ bot.onText(/\/update/, (msg) => {
 });
 
 // =========================
-// RE-USEABLE HELPERS
+// BROWSER HELPERS
 // =========================
-async function fillFormForUser(page, userData) {
-    await page.evaluate((data) => {
-        const set = (s, v) => {
-            const el = document.querySelector(s);
-            if (el && v) {
-                el.value = v;
-                ['input', 'change', 'blur'].forEach(e => el.dispatchEvent(new Event(e, { bubbles: true })));
-            }
+async function fillFormForUser(page, data) {
+    await page.evaluate((d) => {
+        const f = (s, v) => {
+            const e = document.querySelector(s);
+            if (e && v) { e.value = v; ['input','change','blur'].forEach(ev => e.dispatchEvent(new Event(ev,{bubbles:true}))); }
         };
-        const sel = (s, t) => {
-            const el = document.querySelector(s);
-            if (!el || !t) return;
-            const opt = [...el.options].find(o => o.text.toLowerCase().includes(t.toLowerCase().trim()));
-            if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); }
+        const s = (sel, t) => {
+            const e = document.querySelector(sel);
+            if (!e || !t) return;
+            const o = [...e.options].find(opt => opt.text.toLowerCase().includes(t.toLowerCase().trim()));
+            if (o) { e.value = o.value; e.dispatchEvent(new Event('change',{bubbles:true})); }
         };
-
-        set('#Lastname', data.lastName); set('#Firstname', data.firstName);
-        set('#LastnameAtBirth', data.lastNameAtBirth); set('#DateOfBirth', data.dob);
-        set('#PlaceOfBirth', data.placeOfBirth); set('#Postcode', data.postcode);
-        set('#City', data.city); set('#Street', data.street);
-        set('#Telephone', data.telephone); set('#Email', data.email);
-        set('#TraveldocumentNumber', data.passportNumber);
-        set('#TraveldocumentDateOfIssue', data.passportIssueDate);
-        set('#TraveldocumentValidUntil', data.passportValidUntil);
-        sel('#CountryOfBirth', data.countryOfBirth); sel('#Sex', data.sex);
-        sel('#Country', data.country); sel('#TraveldocumentIssuingAuthority', data.passportAuthority);
-        sel('#NationalityAtBirth', data.nationalityAtBirth); sel('#NationalityForApplication', data.actualNationality);
-        const cb = document.querySelector('input[name="DSGVOAccepted"]');
-        if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-    }, userData);
+        f('#Lastname', d.lastName); f('#Firstname', d.firstName); f('#LastnameAtBirth', d.lastNameAtBirth);
+        f('#DateOfBirth', d.dob); f('#PlaceOfBirth', d.placeOfBirth); f('#Postcode', d.postcode);
+        f('#City', d.city); f('#Street', d.street); f('#Telephone', d.telephone); f('#Email', d.email);
+        f('#TraveldocumentNumber', d.passportNumber); f('#TraveldocumentDateOfIssue', d.passportIssueDate);
+        f('#TraveldocumentValidUntil', d.passportValidUntil); s('#CountryOfBirth', d.countryOfBirth);
+        s('#Sex', d.sex); s('#Country', d.country); s('#TraveldocumentIssuingAuthority', d.passportAuthority);
+        s('#NationalityAtBirth', d.nationalityAtBirth); s('#NationalityForApplication', d.actualNationality);
+        const c = document.querySelector('input[name="DSGVOAccepted"]'); if(c) { c.checked = true; c.dispatchEvent(new Event('change')); }
+    }, data);
 }
 
-async function waitAndClickNext(page) {
-    const btn = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
-    try {
-        await page.waitForSelector(btn, { timeout: 4000 });
-        await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {}), page.click(btn)]);
-        return true;
-    } catch { return false; }
-}
-
-// =========================
-// RUNNER
-// =========================
 async function runFlow() {
-    browser = await puppeteer.launch({ headless: false, args: ['--no-sandbox', '--start-maximized'] });
-    
-    // Open tabs for everyone
-    for (const id of Object.keys(users)) {
-        userPages[id] = await browser.newPage();
-    }
+    try {
+        browser = await puppeteer.launch({
+            headless: isRailway ? true : false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+            executablePath: isRailway ? '/usr/bin/google-chrome' : null
+        });
 
-    while (true) {
-        for (const id of Object.keys(userPages)) {
-            const page = userPages[id];
-            try {
-                if (page.isClosed()) continue;
-                await page.goto(TARGET_URL, { waitUntil: 'networkidle2' });
-                
-                const cal = await page.$('#CalendarId');
-                if (cal) {
-                    const val = await page.evaluate((s) => {
-                        const o = [...document.querySelector('#CalendarId').options].find(opt => opt.text.includes(s));
-                        return o ? o.value : null;
-                    }, CALENDAR_SEARCH);
+        for (const id of Object.keys(users)) {
+            userPages[id] = await browser.newPage();
+            await userPages[id].setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        }
 
-                    if (val) {
-                        await page.select('#CalendarId', val);
-                        for (let i = 0; i < 3; i++) await waitAndClickNext(page);
+        while (true) {
+            for (const id of Object.keys(userPages)) {
+                const page = userPages[id];
+                try {
+                    await page.goto(TARGET_URL, { waitUntil: 'networkidle2' });
+                    const cal = await page.$('#CalendarId');
+                    if (cal) {
+                        const val = await page.evaluate((s) => {
+                            const o = [...document.querySelector('#CalendarId').options].find(opt => opt.text.includes(s));
+                            return o ? o.value : null;
+                        }, CALENDAR_SEARCH);
+                        
+                        if (val) {
+                            await page.select('#CalendarId', val);
+                            for (let i = 0; i < 3; i++) {
+                                const btn = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+                                await page.waitForSelector(btn);
+                                await Promise.all([page.waitForNavigation().catch(() => {}), page.click(btn)]);
+                            }
 
-                        const radios = await page.$$('input[type="radio"]');
-                        if (radios.length > 0) {
-                            await radios[0].click(); // First user takes first slot, etc.
-                            await waitAndClickNext(page);
-                            await fillFormForUser(page, users[id]);
-                            
-                            const imgPath = path.join(__dirname, `ready_${id}.png`);
-                            await page.screenshot({ path: imgPath, fullPage: true });
-                            await bot.sendPhoto(id, imgPath, { caption: "🚨 FORM FILLED! REPLY to this with CAPTCHA code." });
-                            
-                            await delay(120000); // Wait 2 mins for user to reply
+                            const r = await page.$$('input[type="radio"]');
+                            if (r.length > 0) {
+                                await r[0].click();
+                                const btn = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+                                await Promise.all([page.waitForNavigation().catch(() => {}), page.click(btn)]);
+                                
+                                await fillFormForUser(page, users[id]);
+                                const img = path.join(__dirname, `ready_${id}.png`);
+                                await page.screenshot({ path: img, fullPage: true });
+                                await bot.sendPhoto(id, img, { caption: "🚨 SLOT FOUND! Reply with CAPTCHA." });
+                                await delay(120000); 
+                            }
                         }
                     }
-                }
-            } catch (err) { console.log(`Error in user ${id} tab.`); }
+                } catch (e) { console.log(`Error in tab ${id}`); }
+            }
+            await delay(CHECK_INTERVAL);
         }
+    } catch (err) {
+        if (browser) await browser.close();
         await delay(CHECK_INTERVAL);
+        runFlow();
     }
 }
 

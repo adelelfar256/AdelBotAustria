@@ -1,13 +1,12 @@
 {
-  "name": "puppeteer-telegram-bot",
+  "name": "visa-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^5.2.1",
-    "node-telegram-bot-api": "^0.66.0",
-    "puppeteer": "^22.15.0"
+    "puppeteer": "^22.0.0",
+    "node-telegram-bot-api": "^0.65.0"
   }
 }
