@@ -95,7 +95,8 @@ async function runFlow() {
             logStep('START', 'Starting new flow...');
 
             browser = await puppeteer.launch({
-                headless: 'new',
+                headless: true,
+                executablePath: '/usr/bin/google-chrome-stable', // or '/usr/bin/chromium-browser'
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             });
 
