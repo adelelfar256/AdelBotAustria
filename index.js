@@ -23,7 +23,10 @@ if (fs.existsSync(usersPath)) {
 let currentPage = null; 
 let isWaitingForCaptcha = false;
 
-const bot = new TelegramBot(telegramToken, { polling: { params: { drop_pending_updates: true } } });
+// Polling with conflict protection
+const bot = new TelegramBot(telegramToken, { 
+    polling: { params: { drop_pending_updates: true } } 
+});
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 async function superLog(message) {
@@ -37,11 +40,11 @@ async function superLog(message) {
 }
 
 // =========================
-// FORM FILLER (Robust Version)
+// FORM FILLER
 // =========================
-async function fillFormForUser(page, data) {
-    await superLog(`📝 Filling/Re-filling form for ${data.firstName}...`);
-    await page.evaluate((d) => {
+async function fillFormForUser(page, d) {
+    await superLog(`📝 Filling form for ${d.firstName}...`);
+    await page.evaluate((data) => {
         const setV = (s, v) => { 
             const e = document.querySelector(s); 
             if(e && v) { e.value = v; e.dispatchEvent(new Event('input', {bubbles:true})); e.dispatchEvent(new Event('change', {bubbles:true})); } 
@@ -53,30 +56,30 @@ async function fillFormForUser(page, data) {
             if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', {bubbles:true})); }
         };
 
-        setV('#Lastname', d.lastName);
-        setV('#Firstname', d.firstName);
-        setV('#LastnameAtBirth', d.lastNameAtBirth || d.lastName);
-        setV('#DateOfBirth', d.dob);
-        setV('#PlaceOfBirth', d.placeOfBirth);
-        setV('#Postcode', d.postcode);
-        setV('#City', d.city);
-        setV('#Street', d.street);
-        setV('#Telephone', d.telephone);
-        setV('#Email', d.email);
-        setV('#TraveldocumentNumber', d.passportNumber);
-        setV('#TraveldocumentDateOfIssue', d.passportIssueDate);
-        setV('#TraveldocumentValidUntil', d.passportValidUntil);
+        setV('#Lastname', data.lastName);
+        setV('#Firstname', data.firstName);
+        setV('#LastnameAtBirth', data.lastNameAtBirth || data.lastName);
+        setV('#DateOfBirth', data.dob);
+        setV('#PlaceOfBirth', data.placeOfBirth);
+        setV('#Postcode', data.postcode);
+        setV('#City', data.city);
+        setV('#Street', data.street);
+        setV('#Telephone', data.telephone);
+        setV('#Email', data.email);
+        setV('#TraveldocumentNumber', data.passportNumber);
+        setV('#TraveldocumentDateOfIssue', data.passportIssueDate);
+        setV('#TraveldocumentValidUntil', data.passportValidUntil);
 
-        sel('#CountryOfBirth', d.countryOfBirth); 
-        sel('#Sex', d.sex); 
-        sel('#Country', d.country);
-        sel('#TraveldocumentIssuingAuthority', d.passportAuthority);
-        sel('#NationalityAtBirth', d.nationalityAtBirth); 
-        sel('#NationalityForApplication', d.actualNationality || d.nationalityAtBirth); 
+        sel('#CountryOfBirth', data.countryOfBirth); 
+        sel('#Sex', data.sex); 
+        sel('#Country', data.country);
+        sel('#TraveldocumentIssuingAuthority', data.passportAuthority);
+        sel('#NationalityAtBirth', data.nationalityAtBirth); 
+        sel('#NationalityForApplication', data.actualNationality || data.nationalityAtBirth); 
 
         const cb = document.querySelector('input[name="DSGVOAccepted"]');
         if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change', {bubbles:true})); }
-    }, data);
+    }, d);
 }
 
 // =========================
@@ -105,25 +108,21 @@ bot.on('message', async (msg) => {
                 currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {})
             ]);
 
-            // CHECK FOR ERRORS
             const errorBox = await currentPage.$('.validation-summary-errors, .alert-danger');
             const hasCaptcha = await currentPage.$(inputSelector);
 
             if (hasCaptcha && errorBox) {
-                const errorMsg = await currentPage.evaluate(el => el.innerText, errorBox);
-                await superLog(`⚠️ ERROR FOUND: ${errorMsg.split('\n')[0]}`);
-                
-                // RE-FILL IMMEDIATELY
+                await superLog(`⚠️ Error detected. Re-filling form...`);
                 const userId = Object.keys(users)[0];
                 await fillFormForUser(currentPage, users[userId]);
                 
                 const screenshotPath = path.join(__dirname, 'retry.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
                 await bot.sendPhoto(msg.chat.id, screenshotPath, { 
-                    caption: "🚨 SITE REJECTED INPUT. I have re-filled the form. Reply to THIS photo with the NEW CAPTCHA." 
+                    caption: "🚨 ERROR! Fields re-filled. Reply with the NEW CAPTCHA." 
                 });
             } else if (!hasCaptcha) {
-                await superLog("✅ SUCCESS! Past the CAPTCHA page.");
+                await superLog("✅ SUCCESS! Form submitted.");
                 isWaitingForCaptcha = false;
             }
         } catch (e) {
@@ -138,9 +137,19 @@ bot.on('message', async (msg) => {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway' : 'Local'})`);
+        await superLog(`🚀 Starting Flow...`);
 
-        let chromePath = isRailway ? (fs.existsSync('/usr/bin/google-chrome-stable') ? '/usr/bin/google-chrome-stable' : '/usr/bin/google-chrome') : null;
+        // --- DYNAMIC PATH FINDER ---
+        let chromePath = null;
+        if (isRailway) {
+            try {
+                chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim();
+                await superLog(`🔍 Chrome Path Found: ${chromePath}`);
+            } catch (e) {
+                const manualPaths = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'];
+                chromePath = manualPaths.find(p => fs.existsSync(p));
+            }
+        }
 
         browser = await puppeteer.launch({
             headless: isRailway ? "new" : false,
@@ -168,7 +177,7 @@ async function runFlow() {
 
         const radios = await currentPage.$$('input[type="radio"]');
         if (radios.length > 0) {
-            await superLog(`✨ SLOT FOUND! Selecting...`);
+            await superLog(`✨ SLOT FOUND!`);
             await radios[0].click();
             await delay(500);
             
@@ -181,22 +190,17 @@ async function runFlow() {
                 
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply to this photo with the CAPTCHA." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
                 while (isWaitingForCaptcha) { await delay(5000); }
                 
-                // Final Check
-                await superLog("🏁 Flow released. Current URL: " + currentPage.url());
-                const finalSnap = path.join(__dirname, 'final.png');
-                await currentPage.screenshot({ path: finalSnap, fullPage: true });
-                await bot.sendPhoto(userId, finalSnap, { caption: "✅ Final Status Screenshot." });
-                
-                await delay(60000); // Wait 1 min for you to see it
+                await superLog("🏁 Flow Finished. Staying alive for 5 mins.");
+                await delay(300000); 
                 await browser.close();
             }
         } else {
-            await superLog('😴 No slots. Cooling down...');
+            await superLog('😴 No slots. Retrying...');
             await browser.close();
             await delay(CHECK_INTERVAL);
             return runFlow();
