@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
-const CHECK_INTERVAL = 15000; 
+const CHECK_INTERVAL = 20000; 
 
 const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 const usersPath = path.join(__dirname, 'users.json');
@@ -28,7 +28,6 @@ const bot = new TelegramBot(telegramToken, {
 });
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// Helper: Logs to Terminal AND Telegram
 async function superLog(message) {
     const timestamp = new Date().toLocaleTimeString();
     const msg = `[${timestamp}] ${message}`;
@@ -46,6 +45,7 @@ bot.on('message', async (msg) => {
     const text = msg.text;
     if (!text || !currentPage) return;
 
+    // Check if user is replying to the form photo
     if (msg.reply_to_message && msg.reply_to_message.caption && msg.reply_to_message.caption.includes("FORM")) {
         try {
             const inputSelector = '#CaptchaText'; 
@@ -64,8 +64,13 @@ bot.on('message', async (msg) => {
                 
                 await delay(500); 
                 await superLog("🖱 Auto-clicking Next button...");
-                await currentPage.click(submitSelector);
-                isWaitingForCaptcha = false; // Release the flow
+                await Promise.all([
+                    currentPage.click(submitSelector),
+                    currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+                ]);
+                
+                isWaitingForCaptcha = false; // RELEASE THE LOOP
+                await superLog("✅ CAPTCHA submitted! Check the browser status.");
             }
         } catch (e) {
             await superLog(`❌ Error in auto-submit: ${e.message}`);
@@ -74,7 +79,7 @@ bot.on('message', async (msg) => {
 });
 
 // =========================
-// BROWSER UTILITIES
+// UTILITIES
 // =========================
 async function waitAndClickNext(page, stepName) {
     const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
@@ -84,33 +89,10 @@ async function waitAndClickNext(page, stepName) {
             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
             page.click(selector)
         ]);
-        await superLog(`✅ Step ${stepName} completed.`);
         return true;
     } catch (e) {
-        await superLog(`❌ Step ${stepName} failed.`);
         return false;
     }
-}
-
-async function fillFormForUser(page, userData) {
-    await superLog(`📝 Filling form for ${userData.firstName}...`);
-    await page.evaluate((data) => {
-        const setVal = (sel, val) => {
-            const el = document.querySelector(sel);
-            if (el && val) {
-                el.value = val;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        };
-        setVal('#Lastname', data.lastName);
-        setVal('#Firstname', data.firstName);
-        setVal('#DateOfBirth', data.dob);
-        setVal('#Email', data.email);
-        setVal('#TraveldocumentNumber', data.passportNumber);
-        const cb = document.querySelector('input[name="DSGVOAccepted"]');
-        if (cb) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-    }, userData);
 }
 
 // =========================
@@ -121,23 +103,28 @@ async function runFlow() {
     try {
         await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway' : 'Local'})`);
 
-        // Find Chrome path on Railway
+        // DYNAMIC CHROME PATH FINDER
         let chromePath = null;
         if (isRailway) {
-            try {
-                chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim();
-            } catch (e) {
-                chromePath = '/usr/bin/google-chrome-stable';
+            const testPaths = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'];
+            for (const p of testPaths) { if (fs.existsSync(p)) { chromePath = p; break; } }
+            
+            if (!chromePath) {
+                try { chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim(); } 
+                catch (e) { chromePath = '/usr/bin/google-chrome-stable'; }
             }
         }
 
         browser = await puppeteer.launch({
             headless: isRailway ? "new" : false, 
             executablePath: chromePath,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
 
         currentPage = await browser.newPage();
+        await currentPage.setViewport({ width: 1280, height: 1000 });
+        
+        await superLog("🌐 Navigating to BMEIA...");
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
         await currentPage.waitForSelector('#CalendarId');
@@ -146,38 +133,50 @@ async function runFlow() {
             return opt ? opt.value : null;
         }, CALENDAR_SEARCH);
 
-        if (masterValue) await currentPage.select('#CalendarId', masterValue);
+        if (masterValue) {
+            await currentPage.select('#CalendarId', masterValue);
+            await superLog(`📅 Selected: ${CALENDAR_SEARCH}`);
+        }
 
         for (let i = 1; i <= 3; i++) {
+            await superLog(`Step ${i}/3: Clicking Next...`);
             await waitAndClickNext(currentPage, i);
         }
 
         const radios = await currentPage.$$('input[type="radio"]');
         if (radios.length > 0) {
-            await superLog(`✨ SLOT FOUND! Selecting...`);
+            await superLog(`✨ SLOT FOUND! Selecting first available.`);
             await radios[0].click();
             await delay(500);
             await waitAndClickNext(currentPage, "Radio Selection");
 
-            const firstUserKey = Object.keys(users)[0];
-            if (firstUserKey) {
-                await fillFormForUser(currentPage, users[firstUserKey]);
-                
-                // Screenshot and Wait
+            const userId = Object.keys(users)[0];
+            if (userId) {
+                // Fill basic data (simplified for reliability)
+                await currentPage.evaluate((data) => {
+                    const setV = (s, v) => { const e = document.querySelector(s); if(e && v) { e.value = v; e.dispatchEvent(new Event('input', {bubbles:true})); } };
+                    setV('#Lastname', data.lastName);
+                    setV('#Firstname', data.firstName);
+                    setV('#DateOfBirth', data.dob);
+                    const cb = document.querySelector('input[name="DSGVOAccepted"]');
+                    if (cb) cb.checked = true;
+                }, users[userId]);
+
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(firstUserKey, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA code." });
                 
                 isWaitingForCaptcha = true;
-                await superLog("⏳ Waiting for your Telegram reply...");
+                await superLog("⏳ BOT IS WAITING for your reply. Flow paused.");
                 
-                // Infinite wait until CAPTCHA is handled to prevent script restart
                 while (isWaitingForCaptcha) {
-                    await delay(5000);
+                    await delay(5000); // Keeps the browser and session alive
                 }
+                
+                await superLog("🏁 Process completed or moved past CAPTCHA.");
             }
         } else {
-            await superLog('😴 No slots. Retrying...');
+            await superLog('😴 No slots. Closing browser to save RAM.');
             await browser.close();
             await delay(CHECK_INTERVAL);
             return runFlow();
@@ -185,7 +184,7 @@ async function runFlow() {
 
     } catch (err) {
         await superLog(`🚨 ERROR: ${err.message}`);
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
         await delay(30000); 
         runFlow();
     }
