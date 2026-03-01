@@ -9,8 +9,5 @@
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "puppeteer": "^22.0.0"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }

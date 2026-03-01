@@ -2,7 +2,6 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 // =========================
 // CONFIG & STATE
@@ -43,57 +42,35 @@ async function superLog(message) {
 // =========================
 bot.on('message', async (msg) => {
     const text = msg.text;
-    if (!text || !currentPage) return;
+    if (!text || !currentPage || !isWaitingForCaptcha) return;
 
-    // Check if user is replying to the form photo
     if (msg.reply_to_message && msg.reply_to_message.caption && msg.reply_to_message.caption.includes("FORM")) {
         try {
             const inputSelector = '#CaptchaText'; 
             const submitSelector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
 
-            const exists = await currentPage.$(inputSelector);
-            if (exists) {
-                await superLog(`⌨️ Typing CAPTCHA: ${text}...`);
-                await currentPage.click(inputSelector);
-                await currentPage.click(inputSelector, { clickCount: 3 });
-                await currentPage.keyboard.press('Backspace');
+            await superLog(`⌨️ Typing CAPTCHA: ${text}...`);
+            await currentPage.click(inputSelector);
+            await currentPage.click(inputSelector, { clickCount: 3 });
+            await currentPage.keyboard.press('Backspace');
 
-                for (const char of text) {
-                    await currentPage.type(inputSelector, char.toUpperCase(), { delay: 40 });
-                }
-                
-                await delay(500); 
-                await superLog("🖱 Auto-clicking Next button...");
-                await Promise.all([
-                    currentPage.click(submitSelector),
-                    currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-                ]);
-                
-                isWaitingForCaptcha = false; // RELEASE THE LOOP
-                await superLog("✅ CAPTCHA submitted! Check the browser status.");
+            for (const char of text) {
+                await currentPage.type(inputSelector, char.toUpperCase(), { delay: 40 });
             }
+            
+            await delay(500); 
+            await superLog("🖱 Auto-clicking Next button...");
+            await Promise.all([
+                currentPage.click(submitSelector),
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+            ]);
+            
+            isWaitingForCaptcha = false;
         } catch (e) {
             await superLog(`❌ Error in auto-submit: ${e.message}`);
         }
     }
 });
-
-// =========================
-// UTILITIES
-// =========================
-async function waitAndClickNext(page, stepName) {
-    const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
-    try {
-        await page.waitForSelector(selector, { visible: true, timeout: 15000 });
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
-            page.click(selector)
-        ]);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
 
 // =========================
 // MAIN RUNNER
@@ -103,30 +80,18 @@ async function runFlow() {
     try {
         await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway' : 'Local'})`);
 
-        // DYNAMIC CHROME PATH FINDER
-        let chromePath = null;
-        if (isRailway) {
-            const testPaths = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'];
-            for (const p of testPaths) { if (fs.existsSync(p)) { chromePath = p; break; } }
-            
-            if (!chromePath) {
-                try { chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim(); } 
-                catch (e) { chromePath = '/usr/bin/google-chrome-stable'; }
-            }
-        }
-
-browser = await puppeteer.launch({
-    headless: isRailway ? "new" : false,
-    // NO executablePath here - let Puppeteer use the one it installed in postinstall
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process', // Better for low-RAM environments like Railway
-        '--no-zygote'
-    ]
-});
+        browser = await puppeteer.launch({
+            headless: isRailway ? "new" : false,
+            // NO executablePath - Puppeteer will use the one installed by postinstall
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote'
+            ]
+        });
 
         currentPage = await browser.newPage();
         await currentPage.setViewport({ width: 1280, height: 1000 });
@@ -142,24 +107,31 @@ browser = await puppeteer.launch({
 
         if (masterValue) {
             await currentPage.select('#CalendarId', masterValue);
-            await superLog(`📅 Selected: ${CALENDAR_SEARCH}`);
         }
 
         for (let i = 1; i <= 3; i++) {
-            await superLog(`Step ${i}/3: Clicking Next...`);
-            await waitAndClickNext(currentPage, i);
+            const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+            await currentPage.waitForSelector(selector);
+            await Promise.all([
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2' }),
+                currentPage.click(selector)
+            ]);
         }
 
         const radios = await currentPage.$$('input[type="radio"]');
         if (radios.length > 0) {
-            await superLog(`✨ SLOT FOUND! Selecting first available.`);
+            await superLog(`✨ SLOT FOUND!`);
             await radios[0].click();
             await delay(500);
-            await waitAndClickNext(currentPage, "Radio Selection");
+            
+            const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+            await Promise.all([
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2' }),
+                currentPage.click(selector)
+            ]);
 
             const userId = Object.keys(users)[0];
             if (userId) {
-                // Fill basic data (simplified for reliability)
                 await currentPage.evaluate((data) => {
                     const setV = (s, v) => { const e = document.querySelector(s); if(e && v) { e.value = v; e.dispatchEvent(new Event('input', {bubbles:true})); } };
                     setV('#Lastname', data.lastName);
@@ -171,19 +143,14 @@ browser = await puppeteer.launch({
 
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA code." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
-                await superLog("⏳ BOT IS WAITING for your reply. Flow paused.");
-                
-                while (isWaitingForCaptcha) {
-                    await delay(5000); // Keeps the browser and session alive
-                }
-                
-                await superLog("🏁 Process completed or moved past CAPTCHA.");
+                while (isWaitingForCaptcha) { await delay(5000); }
+                await superLog("🏁 Flow Finished.");
             }
         } else {
-            await superLog('😴 No slots. Closing browser to save RAM.');
+            await superLog('😴 No slots. Retrying...');
             await browser.close();
             await delay(CHECK_INTERVAL);
             return runFlow();
@@ -196,8 +163,5 @@ browser = await puppeteer.launch({
         runFlow();
     }
 }
-
-// 409 Conflict Protection
-bot.on('polling_error', (err) => { if (!err.message.includes('409')) console.error(err); });
 
 runFlow();
