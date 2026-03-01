@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer-core'); // use core for cloud
+const puppeteer = require('puppeteer'); // full Puppeteer package (bundled Chromium)
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
@@ -19,7 +19,7 @@ const NEXT_BUTTON_SELECTOR = 'input[name="Command"][value="Next"]';
 const BACK_BUTTON_SELECTOR = 'input[name="Command"][value="Back"]';
 
 // =========================
-// USERS STORAGE (JSON)
+// USERS STORAGE
 // =========================
 let users = new Set();
 
@@ -63,7 +63,7 @@ bot.onText(/\/stop/, (msg) => {
     }
 });
 
-// Send to all registered users
+// Send message to all users
 async function sendToAll(message) {
     for (const id of users) {
         try {
@@ -93,9 +93,9 @@ async function runFlow() {
         try {
             logStep('START', 'Launching Puppeteer...');
 
+            // Puppeteer uses bundled Chromium automatically
             browser = await puppeteer.launch({
                 headless: true,
-                executablePath: '/usr/bin/chromium-browser', // Render / Railway Chromium
                 args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             });
 
