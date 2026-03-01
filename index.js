@@ -6,124 +6,202 @@ const path = require('path');
 // =========================
 // CONFIG
 // =========================
-const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk'; 
+const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
-const CHECK_INTERVAL = 10000; // Increased to 10s for stability
+const CHECK_INTERVAL = 5000; 
 
-const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 const usersPath = path.join(__dirname, 'users.json');
-
 let users = {};
-let setupState = { active: false, step: 0, data: {}, chatId: null };
-let userPages = {}; 
-let browser = null;
-
-const QUESTIONS = [
-    { key: 'firstName', label: 'First Name' },
-    { key: 'lastName', label: 'Last Name' },
-    { key: 'lastNameAtBirth', label: 'Last Name at Birth' },
-    { key: 'dob', label: 'Date of Birth', hint: '(e.g. 3/15/2016)' },
-    { key: 'placeOfBirth', label: 'Place of Birth (City)' },
-    { key: 'countryOfBirth', label: 'Country of Birth', hint: '(e.g. Egypt)' },
-    { key: 'sex', label: 'Sex (Male/Female)' },
-    { key: 'street', label: 'Street' },
-    { key: 'postcode', label: 'Postcode' },
-    { key: 'city', label: 'City' },
-    { key: 'country', label: 'Current Country', hint: '(e.g. Egypt)' },
-    { key: 'telephone', label: 'Telephone Number' },
-    { key: 'email', label: 'Email Address' },
-    { key: 'passportNumber', label: 'Passport Number' },
-    { key: 'passportIssueDate', label: 'Passport Issue Date', hint: '(e.g. 3/15/2016)' },
-    { key: 'passportValidUntil', label: 'Passport Expiry Date', hint: '(e.g. 3/15/2016)' },
-    { key: 'passportAuthority', label: 'Passport Issuing Authority' },
-    { key: 'nationalityAtBirth', label: 'Nationality at Birth', hint: '(e.g. Egypt)' },
-    { key: 'actualNationality', label: 'Current Nationality', hint: '(e.g. Egypt)' }
-];
-
-async function debugLog(message) {
-    const logMsg = `[${new Date().toISOString()}] ${message}`;
-    console.log(logMsg);
-    const adminId = Object.keys(users)[0];
-    if (adminId) bot.sendMessage(adminId, `🛠 DEBUG: ${logMsg}`).catch(() => {});
-}
-
 if (fs.existsSync(usersPath)) {
-    try { users = JSON.parse(fs.readFileSync(usersPath)); } catch (e) { users = {}; }
+    users = JSON.parse(fs.readFileSync(usersPath));
 }
 
-const bot = new TelegramBot(telegramToken, { 
-    polling: { params: { drop_pending_updates: true } }
-});
-
-// 409 CONFLICT PROTECTOR: If we get a conflict, wait and stop
-bot.on('polling_error', async (err) => {
-    if (err.code === 'ETELEGRAM' && err.message.includes('409')) {
-        console.error("🚨 409 CONFLICT: Another bot is running. Sleeping 60s...");
-        // Do not crash, just wait for the other instance to potentially die
-    }
-});
-
+let currentPage = null; 
+const bot = new TelegramBot(telegramToken, { polling: true });
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 // =========================
-// TELEGRAM COMMANDS
+// TELEGRAM REPLY LISTENER (FIXED: Types & Clicks Next)
 // =========================
-bot.onText(/\/status/, (msg) => {
-    bot.sendMessage(msg.chat.id, `📊 *Status:*\nActive Tabs: ${Object.keys(userPages).length}`);
+bot.on('message', async (msg) => {
+    const text = msg.text;
+    if (!text || !currentPage) return;
+
+    if (msg.reply_to_message && msg.reply_to_message.caption && msg.reply_to_message.caption.includes("FORM")) {
+        try {
+            const inputSelector = '#CaptchaText'; 
+            const submitSelector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+
+            const exists = await currentPage.$(inputSelector);
+            if (exists) {
+                // 1. Clear and Focus
+                await currentPage.click(inputSelector);
+                await currentPage.click(inputSelector, { clickCount: 3 });
+                await currentPage.keyboard.press('Backspace');
+
+                // 2. Type the CAPTCHA code
+                for (const char of text) {
+                    await currentPage.type(inputSelector, char.toUpperCase(), { delay: 40 });
+                }
+                console.log(`✅ CAPTCHA [${text}] typed.`);
+
+                // 3. THE FIX: CLICK NEXT AUTOMATICALLY
+                await delay(500); // Brief pause to ensure site registers input
+                console.log('[INFO] Auto-clicking Next button...');
+                await currentPage.click(submitSelector);
+                
+                await bot.sendMessage(msg.chat.id, "🚀 Code typed and 'Next' clicked!");
+            }
+        } catch (e) {
+            console.error('❌ Error in auto-submit flow:', e.message);
+        }
+    }
 });
 
-bot.onText(/\/restart/, async (msg) => {
-    await debugLog("Manual restart triggered.");
-    process.exit(0); // Railway will restart the container cleanly
-});
+// =========================
+// FORM CAPTURE (Full Page)
+// =========================
+async function captureAndSendForm(page, chatId) {
+    console.log('[INFO] Waiting 2 seconds before screenshot...');
+    await delay(2000); 
+
+    try {
+        const screenshotPath = path.join(__dirname, 'form_filled.png');
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+
+        await bot.sendPhoto(chatId, screenshotPath, { 
+            caption: "🚨 FORM FILLED! Reply to this photo with the CAPTCHA code to type it and click Next automatically." 
+        });
+        
+        console.log('✅ Screenshot of filled form sent to Telegram.');
+    } catch (e) {
+        console.error('❌ Screenshot failed:', e.message);
+    }
+}
+
+async function waitAndClickNext(page) {
+    const selector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+    try {
+        await page.waitForSelector(selector, { visible: true, timeout: 10000 });
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+            page.click(selector)
+        ]);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+async function fillFormForUser(page, userData) {
+    console.log('[INFO] Filling form fields...');
+    await page.evaluate((data) => {
+        const setVal = (sel, val) => {
+            const el = document.querySelector(sel);
+            if (el && val) {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        };
+
+        const select = (sel, txt) => {
+            const s = document.querySelector(sel);
+            if (!s || !txt) return;
+            const opt = [...s.options].find(o => 
+                o.text.toLowerCase().trim() === txt.toLowerCase().trim() ||
+                o.text.toLowerCase().includes(txt.toLowerCase().trim())
+            );
+            if (opt) { 
+                s.value = opt.value; 
+                s.dispatchEvent(new Event('change', { bubbles: true })); 
+            }
+        };
+
+        // Text Inputs (Fixed #Firstname typo)
+        setVal('#Lastname', data.lastName);
+        setVal('#Firstname', data.firstName);
+        setVal('#LastnameAtBirth', data.lastNameAtBirth);
+        setVal('#DateOfBirth', data.dob);
+        setVal('#PlaceOfBirth', data.placeOfBirth);
+        setVal('#Postcode', data.postcode);
+        setVal('#City', data.city);
+        setVal('#Street', data.street);
+        setVal('#Telephone', data.telephone);
+        setVal('#Email', data.email);
+        setVal('#TraveldocumentNumber', data.passportNumber);
+        setVal('#TraveldocumentDateOfIssue', data.passportIssueDate);
+        setVal('#TraveldocumentValidUntil', data.passportValidUntil);
+
+        // Dropdowns
+        select('#CountryOfBirth', data.countryOfBirth); 
+        select('#Sex', data.sex); 
+        select('#Country', data.country);
+        select('#TraveldocumentIssuingAuthority', data.passportAuthority);
+        select('#NationalityAtBirth', data.nationalityAtBirth); 
+        select('#NationalityForApplication', data.actualNationality); 
+
+        // Checkbox
+        const cb = document.querySelector('input[name="DSGVOAccepted"]');
+        if (cb) { 
+            cb.checked = true; 
+            cb.dispatchEvent(new Event('change', { bubbles: true })); 
+        }
+    }, userData);
+}
 
 // =========================
-// BROWSER LOGIC
+// MAIN RUNNER
 // =========================
 async function runFlow() {
+    let browser;
     try {
-        await debugLog("Attempting to launch browser...");
-        
         browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            // No hardcoded executablePath! nixpacks handles this.
+            headless: false,
+            defaultViewport: null,
+            args: ['--no-sandbox', '--start-maximized']
         });
 
-        await debugLog("✅ Browser Launched!");
+        currentPage = await browser.newPage();
+        await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2' });
 
-        for (const id of Object.keys(users)) {
-            userPages[id] = await browser.newPage();
-            await userPages[id].setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+        await currentPage.waitForSelector('#CalendarId');
+        const masterValue = await currentPage.evaluate((search) => {
+            const sel = document.querySelector('#CalendarId');
+            const opt = Array.from(sel.options).find(o => o.textContent.toLowerCase().includes(search.toLowerCase()));
+            return opt ? opt.value : null;
+        }, CALENDAR_SEARCH);
+        if (masterValue) await currentPage.select('#CalendarId', masterValue);
+
+        for (let i = 1; i <= 3; i++) {
+            await waitAndClickNext(currentPage);
         }
 
-        while (true) {
-            for (const id of Object.keys(userPages)) {
-                try {
-                    const page = userPages[id];
-                    await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-                    
-                    const cal = await page.$('#CalendarId');
-                    if (cal) {
-                        const val = await page.evaluate((s) => {
-                            const o = [...document.querySelector('#CalendarId').options].find(opt => opt.text.includes(s));
-                            return o ? o.value : null;
-                        }, CALENDAR_SEARCH);
+        const radios = await currentPage.$$('input[type="radio"]');
+        if (radios.length > 0) {
+            console.log('[FOUND] Slot found! Filling form...');
+            await radios[0].click();
+            await delay(500);
+            await waitAndClickNext(currentPage);
 
-                        if (val) {
-                            await debugLog(`🎯 Found slot for ${id}`);
-                            // ... insert your clicking and form filling logic here ...
-                        }
-                    }
-                } catch (e) { console.log(`Tab error: ${e.message}`); }
+            const firstUserKey = Object.keys(users)[0];
+            if (firstUserKey) {
+                await fillFormForUser(currentPage, users[firstUserKey]);
+                await captureAndSendForm(currentPage, firstUserKey);
+                console.log('✅ Form ready. Send CAPTCHA response in Telegram to auto-submit.');
             }
-            await delay(CHECK_INTERVAL);
+        } else {
+            console.log('❌ No slots. Retrying...');
+            await browser.close();
+            await delay(3000);
+            return runFlow();
         }
+
     } catch (err) {
-        await debugLog(`FATAL ERROR: ${err.message}. Waiting 60s before restart.`);
-        if (browser) await browser.close().catch(() => {});
-        await delay(60000); // CRITICAL: This prevents the 409 Loop
+        console.error('[CRITICAL RESTART]', err.message);
+        if (browser) await browser.close();
+        await delay(CHECK_INTERVAL);
         runFlow();
     }
 }
