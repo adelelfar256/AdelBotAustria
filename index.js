@@ -1,14 +1,14 @@
-const puppeteer = require('puppeteer'); // full Puppeteer package (bundled Chromium)
+const puppeteer = require('puppeteer'); // full package, includes bundled Chromium
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-
-const delay = ms => new Promise(res => setTimeout(res, ms));
+const express = require('express');
 
 // =========================
 // CONFIG
 // =========================
-const telegramToken = '7044372335:AAEXrhJfADVi4nme9oo8ktJcb_6Yqeltp7E';
+const TELEGRAM_TOKEN = 'PUT_NEW_TOKEN_HERE';
+const PORT = process.env.PORT || 3000; // for webhook server
 const USERS_FILE = path.join(__dirname, 'users.json');
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
@@ -17,6 +17,24 @@ const CALENDAR_VALUE = '44281520';
 const CALENDAR_SELECTOR = '#CalendarId';
 const NEXT_BUTTON_SELECTOR = 'input[name="Command"][value="Next"]';
 const BACK_BUTTON_SELECTOR = 'input[name="Command"][value="Back"]';
+
+// =========================
+// EXPRESS SERVER FOR WEBHOOK
+// =========================
+const app = express();
+app.use(express.json());
+
+const bot = new TelegramBot(TELEGRAM_TOKEN);
+bot.setWebHook(`https://YOUR_DOMAIN_OR_RENDER_URL/${TELEGRAM_TOKEN}`);
+
+app.post(`/${TELEGRAM_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+});
+
+app.listen(PORT, () => {
+    console.log(`[WEBHOOK] Server listening on port ${PORT}`);
+});
 
 // =========================
 // USERS STORAGE
@@ -33,29 +51,20 @@ function saveUsers() {
 }
 
 // =========================
-// TELEGRAM BOT
+// TELEGRAM COMMANDS
 // =========================
-const bot = new TelegramBot(telegramToken, { polling: true });
-
-bot.on('polling_error', err => console.error('Telegram polling error:', err.message));
-
-// /start command
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-
     if (!users.has(chatId)) {
         users.add(chatId);
         saveUsers();
         console.log(`New user registered: ${chatId}`);
     }
-
     bot.sendMessage(chatId, "✅ You are now subscribed to appointment alerts.");
 });
 
-// /stop command
 bot.onText(/\/stop/, (msg) => {
     const chatId = msg.chat.id;
-
     if (users.has(chatId)) {
         users.delete(chatId);
         saveUsers();
@@ -63,7 +72,6 @@ bot.onText(/\/stop/, (msg) => {
     }
 });
 
-// Send message to all users
 async function sendToAll(message) {
     for (const id of users) {
         try {
@@ -76,7 +84,7 @@ async function sendToAll(message) {
 }
 
 // =========================
-// LOGGING
+// LOGGING HELPER
 // =========================
 function logStep(step, extra = '') {
     const timestamp = new Date().toLocaleTimeString();
@@ -93,14 +101,20 @@ async function runFlow() {
         try {
             logStep('START', 'Launching Puppeteer...');
 
-            // Puppeteer uses bundled Chromium automatically
             browser = await puppeteer.launch({
                 headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-extensions',
+                    '--window-size=1920,1080'
+                ]
             });
 
             const page = await browser.newPage();
-            await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+            await page.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 120000 });
             logStep('PAGE', 'Page loaded');
 
             await page.waitForSelector(CALENDAR_SELECTOR, { timeout: 20000 });
@@ -118,10 +132,15 @@ async function runFlow() {
                 const nextClicks = firstRun ? 3 : 2;
 
                 for (let i = 1; i <= nextClicks; i++) {
-                    await page.waitForSelector(NEXT_BUTTON_SELECTOR, { timeout: 15000 });
-                    await page.click(NEXT_BUTTON_SELECTOR);
-                    logStep('NEXT', `Clicked Next (${i}/${nextClicks})`);
-                    await delay(2000);
+                    try {
+                        await page.waitForSelector(NEXT_BUTTON_SELECTOR, { timeout: 20000 });
+                        await page.click(NEXT_BUTTON_SELECTOR);
+                        logStep('NEXT', `Clicked Next (${i}/${nextClicks})`);
+                        await delay(2000);
+                    } catch (err) {
+                        logStep('WARN', 'Next button not found, retrying in 5s');
+                        await delay(5000);
+                    }
                 }
 
                 const content = await page.content();
@@ -137,12 +156,16 @@ async function runFlow() {
                     }
                 }
 
-                const backButton = await page.$(BACK_BUTTON_SELECTOR);
-                if (!backButton) throw new Error('Back button not found');
-
-                await backButton.click();
-                logStep('BACK', 'Restarting flow...');
-                await delay(2000);
+                try {
+                    const backButton = await page.$(BACK_BUTTON_SELECTOR);
+                    if (backButton) {
+                        await backButton.click();
+                        logStep('BACK', 'Restarting flow...');
+                        await delay(2000);
+                    }
+                } catch (err) {
+                    logStep('WARN', 'Back button not found, will retry flow');
+                }
 
                 firstRun = false;
             }
@@ -162,7 +185,7 @@ async function runFlow() {
 }
 
 // =========================
-// START BOT & FLOW
+// START
 // =========================
 logStep('BOT', 'Bot started...');
 runFlow();
