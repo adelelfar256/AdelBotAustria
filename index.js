@@ -151,18 +151,12 @@ async function runFlow() {
             }
         }
 
-browser = await puppeteer.launch({
-    headless: "new",
-    // We leave executablePath out and let the environment variable handle it
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--single-process',
-        '--no-zygote'
-    ]
-});
+        browser = await puppeteer.launch({
+            headless: isRailway ? "new" : false,
+            executablePath: chromePath,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        });
+
         currentPage = await browser.newPage();
         await currentPage.setViewport({ width: 1280, height: 1200 });
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
