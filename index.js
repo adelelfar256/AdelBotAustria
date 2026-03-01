@@ -7,7 +7,7 @@ const express = require('express');
 // =========================
 // CONFIG
 // =========================
-const TELEGRAM_TOKEN = 'PUT_NEW_TOKEN_HERE';
+const TELEGRAM_TOKEN = '7044372335:AAEXrhJfADVi4nme9oo8ktJcb_6Yqeltp7E';
 const PORT = process.env.PORT || 3000; // for webhook server
 const USERS_FILE = path.join(__dirname, 'users.json');
 
