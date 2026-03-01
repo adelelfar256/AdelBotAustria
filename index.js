@@ -95,11 +95,18 @@ async function runFlow() {
     try {
         await superLog(`🚀 Starting Flow (Mode: ${isRailway ? 'Railway/Headless' : 'Local/Headed'})`);
         
-        browser = await puppeteer.launch({
-            headless: isRailway ? "new" : false, 
-            defaultViewport: { width: 1280, height: 800 },
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+browser = await puppeteer.launch({
+    headless: isRailway ? "new" : false,
+    // FORCE the path so it doesn't look in the cache
+    executablePath: isRailway ? '/usr/bin/google-chrome' : null, 
+    defaultViewport: { width: 1280, height: 800 },
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+    ]
+});
 
         currentPage = await browser.newPage();
         await superLog(`🌐 Navigating to BMEIA...`);
