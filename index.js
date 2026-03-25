@@ -2,17 +2,15 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 // =========================
 // CONFIG & STATE
 // =========================
-const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
+const telegramToken = process.env.TELEGRAM_TOKEN || '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
-const CHECK_INTERVAL = 20000; 
+const CHECK_INTERVAL = 30000; // Increased slightly for stability
 
-const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 const usersPath = path.join(__dirname, 'users.json');
 
 let users = {};
@@ -27,6 +25,7 @@ let isWaitingForCaptcha = false;
 const bot = new TelegramBot(telegramToken, { 
     polling: { params: { drop_pending_updates: true } } 
 });
+
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 async function superLog(message) {
@@ -105,13 +104,12 @@ bot.on('message', async (msg) => {
             await superLog("🖱 Submitting...");
             await Promise.all([
                 currentPage.click(submitSelector),
-                currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {})
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
             ]);
 
-            const errorBox = await currentPage.$('.validation-summary-errors, .alert-danger');
             const hasCaptcha = await currentPage.$(inputSelector);
 
-            if (hasCaptcha && errorBox) {
+            if (hasCaptcha) {
                 await superLog(`⚠️ Error detected. Re-filling form...`);
                 const userId = Object.keys(users)[0];
                 await fillFormForUser(currentPage, users[userId]);
@@ -121,7 +119,7 @@ bot.on('message', async (msg) => {
                 await bot.sendPhoto(msg.chat.id, screenshotPath, { 
                     caption: "🚨 ERROR! Fields re-filled. Reply with the NEW CAPTCHA." 
                 });
-            } else if (!hasCaptcha) {
+            } else {
                 await superLog("✅ SUCCESS! Form submitted.");
                 isWaitingForCaptcha = false;
             }
@@ -137,31 +135,29 @@ bot.on('message', async (msg) => {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Starting Flow...`);
-
-        // --- DYNAMIC PATH FINDER ---
-        let chromePath = null;
-        if (isRailway) {
-            try {
-                chromePath = execSync('which google-chrome-stable || which google-chrome').toString().trim();
-                await superLog(`🔍 Chrome Path Found: ${chromePath}`);
-            } catch (e) {
-                const manualPaths = ['/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'];
-                chromePath = manualPaths.find(p => fs.existsSync(p));
-            }
-        }
+        await superLog(`🚀 Starting session...`);
 
         browser = await puppeteer.launch({
             headless: "new",
-            executablePath: chromePath,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage', 
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote'
+            ]
         });
 
         currentPage = await browser.newPage();
+        // Crucial for bypassing some basic bot filters
+        await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
         await currentPage.setViewport({ width: 1280, height: 1200 });
-        await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        await currentPage.waitForSelector('#CalendarId');
+        await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
+
+        await currentPage.waitForSelector('#CalendarId', { timeout: 30000 });
         const masterValue = await currentPage.evaluate((search) => {
             const opt = [...document.querySelector('#CalendarId').options].find(o => o.text.includes(search));
             return opt ? opt.value : null;
@@ -171,8 +167,11 @@ async function runFlow() {
 
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
-            await currentPage.waitForSelector(sel);
-            await Promise.all([currentPage.waitForNavigation({ waitUntil: 'networkidle2' }), currentPage.click(sel)]);
+            await currentPage.waitForSelector(sel, { timeout: 20000 });
+            await Promise.all([
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2' }), 
+                currentPage.click(sel)
+            ]);
         }
 
         const radios = await currentPage.$$('input[type="radio"]');
@@ -182,7 +181,10 @@ async function runFlow() {
             await delay(500);
             
             const nextSel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
-            await Promise.all([currentPage.waitForNavigation({ waitUntil: 'networkidle2' }), currentPage.click(nextSel)]);
+            await Promise.all([
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2' }), 
+                currentPage.click(nextSel)
+            ]);
 
             const userId = Object.keys(users)[0];
             if (userId) {
@@ -193,25 +195,35 @@ async function runFlow() {
                 await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
-                while (isWaitingForCaptcha) { await delay(5000); }
+                // Keep the browser open while waiting for the human to reply via Telegram
+                const startTime = Date.now();
+                while (isWaitingForCaptcha && (Date.now() - startTime < 300000)) { 
+                    await delay(5000); 
+                }
                 
-                await superLog("🏁 Flow Finished. Staying alive for 5 mins.");
-                await delay(300000); 
-                await browser.close();
+                await superLog("🏁 Session finished.");
             }
         } else {
-            await superLog('😴 No slots. Retrying...');
-            await browser.close();
-            await delay(CHECK_INTERVAL);
-            return runFlow();
+            await superLog('😴 No slots.');
         }
 
     } catch (err) {
         await superLog(`🚨 ERROR: ${err.message}`);
+    } finally {
         if (browser) await browser.close().catch(() => {});
-        await delay(30000); 
-        runFlow();
+        currentPage = null;
     }
 }
 
-runFlow();
+// Master loop to prevent stack overflow/recursion issues
+async function main() {
+    await superLog("🤖 Bot Started on Railway");
+    while (true) {
+        if (!isWaitingForCaptcha) {
+            await runFlow();
+        }
+        await delay(CHECK_INTERVAL);
+    }
+}
+
+main();
