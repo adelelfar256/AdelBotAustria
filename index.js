@@ -2,7 +2,6 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-const os = require('os'); // Added to detect OS
 
 // =========================
 // CONFIG & STATE
@@ -12,10 +11,9 @@ const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
 const CHECK_INTERVAL = 45000; 
 
-// Detect environment
 const isRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.PORT);
-
 const usersPath = path.join(__dirname, 'users.json');
+
 let users = {};
 if (fs.existsSync(usersPath)) {
     try { users = JSON.parse(fs.readFileSync(usersPath)); } catch (e) { users = {}; }
@@ -131,25 +129,17 @@ bot.on('message', async (msg) => {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Scanning for slots...`);
+        await superLog(`🚀 Starting session...`);
 
-        // --- SMART PATH LOGIC ---
-        let chromePath = undefined; // Default for Local (Puppeteer finds it)
+        let chromePath = undefined; 
         if (isRailway) {
             chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         }
 
         browser = await puppeteer.launch({
-            headless: isRailway ? "new" : false, // See the window locally
+            headless: isRailway ? "new" : false, 
             executablePath: chromePath,
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                ...(isRailway ? ['--single-process', '--js-flags="--max-old-space-size=256"'] : [])
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
         });
 
         currentPage = await browser.newPage();
@@ -173,7 +163,7 @@ async function runFlow() {
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
             await currentPage.waitForSelector(sel, { timeout: 20000 });
-            await delay(2000); // Wait for page to be "ready"
+            await delay(2000); 
             
             try {
                 await Promise.all([
@@ -181,15 +171,18 @@ async function runFlow() {
                     currentPage.click(sel)
                 ]);
             } catch (navErr) {
-                // Check if we actually made it to the next step despite timeout
                 const stillOnOldPage = await currentPage.$(sel);
                 if (stillOnOldPage) throw navErr;
             }
         }
 
+        // --- NEW SLOT CHECK LOGIC ---
+        const pageText = await currentPage.evaluate(() => document.body.innerText);
+        const hasNoApptMsg = pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة");
         const radios = await currentPage.$$('input[type="radio"]');
-        if (radios.length > 0) {
-            await superLog(`✨ SLOT FOUND!`);
+
+        if (radios.length > 0 && !hasNoApptMsg) {
+            await superLog(`✨ REAL SLOT FOUND!`);
             await radios[0].click();
             await delay(1000);
             
@@ -204,7 +197,7 @@ async function runFlow() {
                 await fillFormForUser(currentPage, users[userId]);
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT FOUND & FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
                 const timeoutLimit = Date.now() + 300000; 
@@ -214,7 +207,8 @@ async function runFlow() {
                 isWaitingForCaptcha = false;
             }
         } else {
-            await superLog('😴 No slots.');
+            const statusMsg = hasNoApptMsg ? "😴 Found radio buttons but page says: 'No appointments available'." : "😴 No slots found (no radio buttons).";
+            await superLog(statusMsg);
         }
 
     } catch (err) {
