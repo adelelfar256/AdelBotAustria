@@ -9,10 +9,12 @@ const path = require('path');
 const telegramToken = process.env.TELEGRAM_TOKEN || '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
-const CHECK_INTERVAL = 30000; // Increased slightly for stability
+const CHECK_INTERVAL = 45000; 
+
+// Detect if we are on Railway
+const isRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.PORT);
 
 const usersPath = path.join(__dirname, 'users.json');
-
 let users = {};
 if (fs.existsSync(usersPath)) {
     try { users = JSON.parse(fs.readFileSync(usersPath)); } catch (e) { users = {}; }
@@ -98,27 +100,21 @@ bot.on('message', async (msg) => {
             await currentPage.keyboard.press('Backspace');
 
             for (const char of text) {
-                await currentPage.type(inputSelector, char.toUpperCase(), { delay: 30 });
+                await currentPage.type(inputSelector, char.toUpperCase(), { delay: 60 });
             }
             
             await superLog("🖱 Submitting...");
             await Promise.all([
                 currentPage.click(submitSelector),
-                currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+                currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 35000 }).catch(() => {})
             ]);
 
             const hasCaptcha = await currentPage.$(inputSelector);
-
             if (hasCaptcha) {
-                await superLog(`⚠️ Error detected. Re-filling form...`);
-                const userId = Object.keys(users)[0];
-                await fillFormForUser(currentPage, users[userId]);
-                
+                await superLog(`⚠️ Wrong CAPTCHA. Re-trying...`);
                 const screenshotPath = path.join(__dirname, 'retry.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(msg.chat.id, screenshotPath, { 
-                    caption: "🚨 ERROR! Fields re-filled. Reply with the NEW CAPTCHA." 
-                });
+                await bot.sendPhoto(msg.chat.id, screenshotPath, { caption: "🚨 NEW CAPTCHA. Reply to this image." });
             } else {
                 await superLog("✅ SUCCESS! Form submitted.");
                 isWaitingForCaptcha = false;
@@ -138,23 +134,25 @@ async function runFlow() {
         await superLog(`🚀 Starting session...`);
 
         browser = await puppeteer.launch({
-            headless: "new",
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+            // Local: opens window (set to true for hidden). Railway: always headless.
+            headless: isRailway ? "new" : false, 
+            // Local: automatically finds Chrome. Railway: uses the Nixpack path.
+            executablePath: isRailway ? (process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable') : undefined,
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage', 
+                '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--single-process',
-                '--no-zygote'
+                '--no-zygote',
+                ...(isRailway ? ['--single-process', '--js-flags="--max-old-space-size=256"'] : [])
             ]
         });
 
         currentPage = await browser.newPage();
-        // Crucial for bypassing some basic bot filters
-        await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
+        await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         await currentPage.setViewport({ width: 1280, height: 1200 });
 
+        await superLog("🌐 Navigating to site...");
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
         await currentPage.waitForSelector('#CalendarId', { timeout: 30000 });
@@ -164,21 +162,33 @@ async function runFlow() {
         }, CALENDAR_SEARCH);
 
         if (masterValue) await currentPage.select('#CalendarId', masterValue);
+        await delay(1000);
 
+        // Step: Navigation through 3 'Next' clicks
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
             await currentPage.waitForSelector(sel, { timeout: 20000 });
-            await Promise.all([
-                currentPage.waitForNavigation({ waitUntil: 'networkidle2' }), 
-                currentPage.click(sel)
-            ]);
+            
+            await delay(2000); // Wait for frame stability
+            
+            // Fixed navigation pattern to prevent "Detached Frame"
+            try {
+                await Promise.all([
+                    currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                    currentPage.click(sel)
+                ]);
+            } catch (navErr) {
+                // Check if we actually landed on the next page despite the error
+                const stillOnOldPage = await currentPage.$(sel);
+                if (stillOnOldPage) throw navErr;
+            }
         }
 
         const radios = await currentPage.$$('input[type="radio"]');
         if (radios.length > 0) {
             await superLog(`✨ SLOT FOUND!`);
             await radios[0].click();
-            await delay(500);
+            await delay(1000);
             
             const nextSel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
             await Promise.all([
@@ -195,13 +205,11 @@ async function runFlow() {
                 await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
-                // Keep the browser open while waiting for the human to reply via Telegram
-                const startTime = Date.now();
-                while (isWaitingForCaptcha && (Date.now() - startTime < 300000)) { 
+                const timeoutLimit = Date.now() + 300000; // 5 mins
+                while (isWaitingForCaptcha && Date.now() < timeoutLimit) { 
                     await delay(5000); 
                 }
-                
-                await superLog("🏁 Session finished.");
+                isWaitingForCaptcha = false;
             }
         } else {
             await superLog('😴 No slots.');
@@ -215,9 +223,8 @@ async function runFlow() {
     }
 }
 
-// Master loop to prevent stack overflow/recursion issues
 async function main() {
-    await superLog("🤖 Bot Started on Railway");
+    await superLog("🤖 Bot Started.");
     while (true) {
         if (!isWaitingForCaptcha) {
             await runFlow();
