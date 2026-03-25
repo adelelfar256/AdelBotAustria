@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // =========================
 // CONFIG & STATE
@@ -11,7 +12,7 @@ const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
 const CHECK_INTERVAL = 45000; 
 
-const isRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.PORT);
+const isRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_STATIC_URL || process.env.PORT);
 const usersPath = path.join(__dirname, 'users.json');
 
 let users = {};
@@ -35,6 +36,19 @@ async function superLog(message) {
     const adminId = Object.keys(users)[0];
     if (adminId) {
         await bot.sendMessage(adminId, `🛰 **LOG:** ${message}`).catch(() => {});
+    }
+}
+
+async function sendErrorScreenshot(page, stepName) {
+    try {
+        const screenshotPath = path.join(__dirname, `error_${stepName}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        const adminId = Object.keys(users)[0];
+        if (adminId) {
+            await bot.sendPhoto(adminId, screenshotPath, { caption: `❌ Error at ${stepName}` });
+        }
+    } catch (e) {
+        console.error("Could not take error screenshot", e.message);
     }
 }
 
@@ -101,7 +115,7 @@ bot.on('message', async (msg) => {
                 await currentPage.type(inputSelector, char.toUpperCase(), { delay: 60 });
             }
             
-            await superLog("🖱 [CAPTCHA] Submitting form...");
+            await superLog("🖱 [CAPTCHA] Submitting...");
             await Promise.all([
                 currentPage.click(submitSelector),
                 currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 35000 }).catch(() => {})
@@ -109,12 +123,12 @@ bot.on('message', async (msg) => {
 
             const hasCaptcha = await currentPage.$(inputSelector);
             if (hasCaptcha) {
-                await superLog(`⚠️ [CAPTCHA] Incorrect. Requesting new one...`);
+                await superLog(`⚠️ [CAPTCHA] Wrong code.`);
                 const screenshotPath = path.join(__dirname, 'retry.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(msg.chat.id, screenshotPath, { caption: "🚨 WRONG CAPTCHA. Reply to this image with the NEW code." });
+                await bot.sendPhoto(msg.chat.id, screenshotPath, { caption: "🚨 WRONG CAPTCHA. Reply to this NEW image." });
             } else {
-                await superLog("✅ [SUCCESS] Form submitted and accepted!");
+                await superLog("✅ [SUCCESS] Form submitted!");
                 isWaitingForCaptcha = false;
             }
         } catch (e) {
@@ -132,30 +146,44 @@ async function runFlow() {
         // --- STEP 1: Launch ---
         let chromePath = undefined; 
         if (isRailway) {
-            chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-            await superLog(`🔍 [STEP 1] Launching on Railway with path: ${chromePath}`);
-        } else {
-            await superLog(`💻 [STEP 1] Launching Local Browser...`);
+            // Check multiple common Linux paths for Chrome
+            const possiblePaths = [
+                process.env.PUPPETEER_EXECUTABLE_PATH,
+                '/usr/bin/google-chrome-stable',
+                '/usr/bin/google-chrome',
+                '/nix/var/nix/profiles/default/bin/google-chrome'
+            ];
+            for (const p of possiblePaths) {
+                if (p && fs.existsSync(p)) { chromePath = p; break; }
+            }
+            await superLog(`🔍 [STEP 1] Using Chrome Path: ${chromePath || 'AUTO'}`);
         }
 
         browser = await puppeteer.launch({
             headless: isRailway ? "new" : false, 
             executablePath: chromePath,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                ...(isRailway ? ['--single-process', '--js-flags="--max-old-space-size=256"'] : [])
+            ]
         });
 
         // --- STEP 2: Page Setup ---
-        await superLog(`📄 [STEP 2] Creating New Page & Setting UserAgent...`);
+        await superLog(`📄 [STEP 2] Page Init...`);
         currentPage = await browser.newPage();
         await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         await currentPage.setViewport({ width: 1280, height: 1200 });
 
         // --- STEP 3: Navigation ---
-        await superLog(`🌐 [STEP 3] Navigating to: ${TARGET_URL}`);
+        await superLog(`🌐 [STEP 3] Navigating to BMEIA...`);
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
-        // --- STEP 4: Calendar Selection ---
-        await superLog(`📅 [STEP 4] Waiting for Calendar Dropdown...`);
+        // --- STEP 4: Calendar ---
+        await superLog(`📅 [STEP 4] Calendar Selection...`);
         await currentPage.waitForSelector('#CalendarId', { timeout: 30000 });
         const masterValue = await currentPage.evaluate((search) => {
             const el = document.querySelector('#CalendarId');
@@ -164,17 +192,14 @@ async function runFlow() {
         }, CALENDAR_SEARCH);
 
         if (masterValue) {
-            await superLog(`✅ [STEP 4] Found Calendar Option: ${CALENDAR_SEARCH}`);
             await currentPage.select('#CalendarId', masterValue);
             await delay(1000);
-        } else {
-            throw new Error(`Could not find calendar containing: "${CALENDAR_SEARCH}"`);
         }
 
         // --- STEP 5: Page Crawling ---
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
-            await superLog(`🖱 [STEP 5] Clicking 'Next' (Attempt ${i}/3)...`);
+            await superLog(`🖱 [STEP 5] Clicking 'Next' (${i}/3)...`);
             await currentPage.waitForSelector(sel, { timeout: 20000 });
             await delay(2000); 
             
@@ -186,20 +211,20 @@ async function runFlow() {
             } catch (navErr) {
                 const stillOnOldPage = await currentPage.$(sel);
                 if (stillOnOldPage) {
-                    await superLog(`🚨 [STEP 5 ERROR] Frame Detached or Timeout on Click ${i}`);
-                    throw navErr;
+                    await sendErrorScreenshot(currentPage, `Click_Failed_${i}`);
+                    throw new Error(`Detached at Next ${i}`);
                 }
             }
         }
 
         // --- STEP 6: Slot Check ---
-        await superLog(`🔍 [STEP 6] Final check for Radio Buttons / Slots...`);
+        await superLog(`🔍 [STEP 6] Checking for radio buttons...`);
         const pageText = await currentPage.evaluate(() => document.body.innerText);
         const hasNoApptMsg = pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة");
         const radios = await currentPage.$$('input[type="radio"]');
 
         if (radios.length > 0 && !hasNoApptMsg) {
-            await superLog(`✨ [STEP 7] REAL SLOT FOUND! Clicking selection...`);
+            await superLog(`✨ [STEP 7] REAL SLOT FOUND!`);
             await radios[0].click();
             await delay(1000);
             
@@ -214,22 +239,21 @@ async function runFlow() {
                 await fillFormForUser(currentPage, users[userId]);
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT FOUND! Please reply to this image with the CAPTCHA." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
                 const timeoutLimit = Date.now() + 300000; 
-                while (isWaitingForCaptcha && Date.now() < timeoutLimit) { 
-                    await delay(5000); 
-                }
+                while (isWaitingForCaptcha && Date.now() < timeoutLimit) { await delay(5000); }
                 isWaitingForCaptcha = false;
             }
         } else {
-            const reason = hasNoApptMsg ? "Page says 'No appointments available'" : "No radio buttons present";
-            await superLog(`😴 [RESULT] No slots found. Reason: ${reason}`);
+            const reason = hasNoApptMsg ? "Page says 'No available'" : "No radio buttons";
+            await superLog(`😴 [RESULT] No slots. (${reason})`);
         }
 
     } catch (err) {
-        await superLog(`❌ [FATAL ERROR] at Step: ${err.message}`);
+        await superLog(`❌ [FATAL ERROR]: ${err.message}`);
+        if (currentPage) await sendErrorScreenshot(currentPage, "Fatal_Crash");
     } finally {
         if (browser) {
             await superLog(`🧹 [CLEANUP] Closing browser...`);
