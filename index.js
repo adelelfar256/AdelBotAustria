@@ -8,8 +8,8 @@ const { execSync } = require('child_process');
 // CONFIG & STATE
 // =========================
 const telegramToken = '7044372335:AAFh0yuQBNiAUYY80WDIZ1MihjzWLgLanJk';
-const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
-const CALENDAR_SEARCH = 'Beg'; 
+const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
+const CALENDAR_SEARCH = 'Bach'; 
 const CHECK_INTERVAL = 20000; 
 
 const isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
