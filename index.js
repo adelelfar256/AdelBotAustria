@@ -42,7 +42,7 @@ async function superLog(message) {
 // FORM FILLER
 // =========================
 async function fillFormForUser(page, d) {
-    await superLog(`📝 Filling form for ${d.firstName}...`);
+    await superLog(`📝 [STEP 8] Filling form for ${d.firstName}...`);
     await page.evaluate((data) => {
         const setV = (s, v) => { 
             const e = document.querySelector(s); 
@@ -93,7 +93,7 @@ bot.on('message', async (msg) => {
             const inputSelector = '#CaptchaText'; 
             const submitSelector = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
 
-            await superLog(`⌨️ Typing CAPTCHA: ${text}...`);
+            await superLog(`⌨️ [CAPTCHA] Typing: ${text}...`);
             await currentPage.click(inputSelector, { clickCount: 3 });
             await currentPage.keyboard.press('Backspace');
 
@@ -101,7 +101,7 @@ bot.on('message', async (msg) => {
                 await currentPage.type(inputSelector, char.toUpperCase(), { delay: 60 });
             }
             
-            await superLog("🖱 Submitting...");
+            await superLog("🖱 [CAPTCHA] Submitting form...");
             await Promise.all([
                 currentPage.click(submitSelector),
                 currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 35000 }).catch(() => {})
@@ -109,16 +109,16 @@ bot.on('message', async (msg) => {
 
             const hasCaptcha = await currentPage.$(inputSelector);
             if (hasCaptcha) {
-                await superLog(`⚠️ Wrong CAPTCHA. Re-trying...`);
+                await superLog(`⚠️ [CAPTCHA] Incorrect. Requesting new one...`);
                 const screenshotPath = path.join(__dirname, 'retry.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(msg.chat.id, screenshotPath, { caption: "🚨 NEW CAPTCHA. Reply to this image." });
+                await bot.sendPhoto(msg.chat.id, screenshotPath, { caption: "🚨 WRONG CAPTCHA. Reply to this image with the NEW code." });
             } else {
-                await superLog("✅ SUCCESS! Form submitted.");
+                await superLog("✅ [SUCCESS] Form submitted and accepted!");
                 isWaitingForCaptcha = false;
             }
         } catch (e) {
-            await superLog(`❌ Reply Error: ${e.message}`);
+            await superLog(`❌ [REPLY ERROR] ${e.message}`);
         }
     }
 });
@@ -129,11 +129,13 @@ bot.on('message', async (msg) => {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Starting session...`);
-
+        // --- STEP 1: Launch ---
         let chromePath = undefined; 
         if (isRailway) {
             chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+            await superLog(`🔍 [STEP 1] Launching on Railway with path: ${chromePath}`);
+        } else {
+            await superLog(`💻 [STEP 1] Launching Local Browser...`);
         }
 
         browser = await puppeteer.launch({
@@ -142,12 +144,18 @@ async function runFlow() {
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote']
         });
 
+        // --- STEP 2: Page Setup ---
+        await superLog(`📄 [STEP 2] Creating New Page & Setting UserAgent...`);
         currentPage = await browser.newPage();
         await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         await currentPage.setViewport({ width: 1280, height: 1200 });
 
+        // --- STEP 3: Navigation ---
+        await superLog(`🌐 [STEP 3] Navigating to: ${TARGET_URL}`);
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
+        // --- STEP 4: Calendar Selection ---
+        await superLog(`📅 [STEP 4] Waiting for Calendar Dropdown...`);
         await currentPage.waitForSelector('#CalendarId', { timeout: 30000 });
         const masterValue = await currentPage.evaluate((search) => {
             const el = document.querySelector('#CalendarId');
@@ -156,12 +164,17 @@ async function runFlow() {
         }, CALENDAR_SEARCH);
 
         if (masterValue) {
+            await superLog(`✅ [STEP 4] Found Calendar Option: ${CALENDAR_SEARCH}`);
             await currentPage.select('#CalendarId', masterValue);
             await delay(1000);
+        } else {
+            throw new Error(`Could not find calendar containing: "${CALENDAR_SEARCH}"`);
         }
 
+        // --- STEP 5: Page Crawling ---
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+            await superLog(`🖱 [STEP 5] Clicking 'Next' (Attempt ${i}/3)...`);
             await currentPage.waitForSelector(sel, { timeout: 20000 });
             await delay(2000); 
             
@@ -172,17 +185,21 @@ async function runFlow() {
                 ]);
             } catch (navErr) {
                 const stillOnOldPage = await currentPage.$(sel);
-                if (stillOnOldPage) throw navErr;
+                if (stillOnOldPage) {
+                    await superLog(`🚨 [STEP 5 ERROR] Frame Detached or Timeout on Click ${i}`);
+                    throw navErr;
+                }
             }
         }
 
-        // --- NEW SLOT CHECK LOGIC ---
+        // --- STEP 6: Slot Check ---
+        await superLog(`🔍 [STEP 6] Final check for Radio Buttons / Slots...`);
         const pageText = await currentPage.evaluate(() => document.body.innerText);
         const hasNoApptMsg = pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة");
         const radios = await currentPage.$$('input[type="radio"]');
 
         if (radios.length > 0 && !hasNoApptMsg) {
-            await superLog(`✨ REAL SLOT FOUND!`);
+            await superLog(`✨ [STEP 7] REAL SLOT FOUND! Clicking selection...`);
             await radios[0].click();
             await delay(1000);
             
@@ -197,7 +214,7 @@ async function runFlow() {
                 await fillFormForUser(currentPage, users[userId]);
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT FOUND & FORM FILLED! Reply with CAPTCHA." });
+                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT FOUND! Please reply to this image with the CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
                 const timeoutLimit = Date.now() + 300000; 
@@ -207,14 +224,17 @@ async function runFlow() {
                 isWaitingForCaptcha = false;
             }
         } else {
-            const statusMsg = hasNoApptMsg ? "😴 Found radio buttons but page says: 'No appointments available'." : "😴 No slots found (no radio buttons).";
-            await superLog(statusMsg);
+            const reason = hasNoApptMsg ? "Page says 'No appointments available'" : "No radio buttons present";
+            await superLog(`😴 [RESULT] No slots found. Reason: ${reason}`);
         }
 
     } catch (err) {
-        await superLog(`🚨 ERROR: ${err.message}`);
+        await superLog(`❌ [FATAL ERROR] at Step: ${err.message}`);
     } finally {
-        if (browser) await browser.close().catch(() => {});
+        if (browser) {
+            await superLog(`🧹 [CLEANUP] Closing browser...`);
+            await browser.close().catch(() => {});
+        }
         currentPage = null;
     }
 }
