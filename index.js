@@ -152,7 +152,7 @@ async function runFlow() {
         }
 
         browser = await puppeteer.launch({
-            headless: isRailway ? "new" : false,
+            headless: "new",
             executablePath: chromePath,
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         });
