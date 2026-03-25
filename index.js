@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
+const os = require('os'); // Added to detect OS
 
 // =========================
 // CONFIG & STATE
@@ -11,7 +12,7 @@ const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg'; 
 const CHECK_INTERVAL = 45000; 
 
-// Detect if we are on Railway
+// Detect environment
 const isRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.PORT);
 
 const usersPath = path.join(__dirname, 'users.json');
@@ -23,7 +24,6 @@ if (fs.existsSync(usersPath)) {
 let currentPage = null; 
 let isWaitingForCaptcha = false;
 
-// Polling with conflict protection
 const bot = new TelegramBot(telegramToken, { 
     polling: { params: { drop_pending_updates: true } } 
 });
@@ -131,13 +131,17 @@ bot.on('message', async (msg) => {
 async function runFlow() {
     let browser;
     try {
-        await superLog(`🚀 Starting session...`);
+        await superLog(`🚀 Scanning for slots...`);
+
+        // --- SMART PATH LOGIC ---
+        let chromePath = undefined; // Default for Local (Puppeteer finds it)
+        if (isRailway) {
+            chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+        }
 
         browser = await puppeteer.launch({
-            // Local: opens window (set to true for hidden). Railway: always headless.
-            headless: isRailway ? "new" : false, 
-            // Local: automatically finds Chrome. Railway: uses the Nixpack path.
-            executablePath: isRailway ? (process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable') : undefined,
+            headless: isRailway ? "new" : false, // See the window locally
+            executablePath: chromePath,
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox', 
@@ -152,33 +156,32 @@ async function runFlow() {
         await currentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         await currentPage.setViewport({ width: 1280, height: 1200 });
 
-        await superLog("🌐 Navigating to site...");
         await currentPage.goto(TARGET_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
         await currentPage.waitForSelector('#CalendarId', { timeout: 30000 });
         const masterValue = await currentPage.evaluate((search) => {
-            const opt = [...document.querySelector('#CalendarId').options].find(o => o.text.includes(search));
+            const el = document.querySelector('#CalendarId');
+            const opt = [...el.options].find(o => o.text.includes(search));
             return opt ? opt.value : null;
         }, CALENDAR_SEARCH);
 
-        if (masterValue) await currentPage.select('#CalendarId', masterValue);
-        await delay(1000);
+        if (masterValue) {
+            await currentPage.select('#CalendarId', masterValue);
+            await delay(1000);
+        }
 
-        // Step: Navigation through 3 'Next' clicks
         for (let i = 1; i <= 3; i++) {
             const sel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
             await currentPage.waitForSelector(sel, { timeout: 20000 });
+            await delay(2000); // Wait for page to be "ready"
             
-            await delay(2000); // Wait for frame stability
-            
-            // Fixed navigation pattern to prevent "Detached Frame"
             try {
                 await Promise.all([
-                    currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                    currentPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 35000 }),
                     currentPage.click(sel)
                 ]);
             } catch (navErr) {
-                // Check if we actually landed on the next page despite the error
+                // Check if we actually made it to the next step despite timeout
                 const stillOnOldPage = await currentPage.$(sel);
                 if (stillOnOldPage) throw navErr;
             }
@@ -199,13 +202,12 @@ async function runFlow() {
             const userId = Object.keys(users)[0];
             if (userId) {
                 await fillFormForUser(currentPage, users[userId]);
-                
                 const screenshotPath = path.join(__dirname, 'form.png');
                 await currentPage.screenshot({ path: screenshotPath, fullPage: true });
                 await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 FORM FILLED! Reply with CAPTCHA." });
                 
                 isWaitingForCaptcha = true;
-                const timeoutLimit = Date.now() + 300000; // 5 mins
+                const timeoutLimit = Date.now() + 300000; 
                 while (isWaitingForCaptcha && Date.now() < timeoutLimit) { 
                     await delay(5000); 
                 }
@@ -224,7 +226,7 @@ async function runFlow() {
 }
 
 async function main() {
-    await superLog("🤖 Bot Started.");
+    await superLog(`🤖 Bot Started (${isRailway ? 'RAILWAY' : 'LOCAL'})`);
     while (true) {
         if (!isWaitingForCaptcha) {
             await runFlow();
