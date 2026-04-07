@@ -2,9 +2,11 @@ const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-
 require('dotenv').config();
 
+// =========================
+// CONFIG
+// =========================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg';
@@ -16,6 +18,9 @@ if (fs.existsSync(usersPath)) {
     users = JSON.parse(fs.readFileSync(usersPath));
 }
 
+// =========================
+// TELEGRAM BOT
+// =========================
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -26,12 +31,17 @@ async function superLog(msg) {
 }
 
 // =========================
-// Main check flow
+// MAIN CHECK FUNCTION
 // =========================
 async function checkSlots() {
     let browser;
     try {
-        browser = await puppeteer.launch({ headless: false }); // see browser
+        // Headful locally, headless on Render
+        browser = await puppeteer.launch({
+            headless: process.env.RENDER ? "new" : false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        });
+
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 1200 });
 
@@ -67,6 +77,7 @@ async function checkSlots() {
             superLog('⚡ SLOT FOUND! Sending Telegram message...');
             const screenshotPath = path.join(__dirname, 'slot.png');
             await page.screenshot({ path: screenshotPath, fullPage: true });
+
             const userId = Object.keys(users)[0];
             if (userId) {
                 await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT AVAILABLE!" });
@@ -83,7 +94,7 @@ async function checkSlots() {
 }
 
 // =========================
-// Loop
+// MAIN LOOP
 // =========================
 async function main() {
     superLog('Bot started...');
