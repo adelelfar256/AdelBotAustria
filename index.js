@@ -36,7 +36,6 @@ async function superLog(msg) {
 async function checkSlots() {
     let browser;
     try {
-        // Headful locally, headless on Render
         browser = await puppeteer.launch({
             headless: process.env.RENDER ? "new" : false,
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -59,6 +58,9 @@ async function checkSlots() {
         if (masterValue) await page.select('#CalendarId', masterValue);
 
         const nextSel = 'input[type="submit"][value="Next"], input[type="submit"][value="التالى"]';
+        const backSel = 'input[type="submit"][value="Back"], input[type="submit"][value="السابق"]';
+
+        // Click Next 4 times initially
         for (let i = 0; i < 4; i++) {
             await page.waitForSelector(nextSel, { timeout: 20000 });
             await Promise.all([
@@ -68,12 +70,38 @@ async function checkSlots() {
             await delay(1000);
         }
 
-        // Check slots
-        const pageText = await page.evaluate(() => document.body.innerText);
-        const hasNoAppt = pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة");
-        const radios = await page.$$('input[type="radio"]');
+        // Check for slots
+        let pageText = await page.evaluate(() => document.body.innerText);
+        let radios = await page.$$('input[type="radio"]');
 
-        if (radios.length > 0 && !hasNoAppt) {
+        // If "no appointments available" appears, click back → next → next
+        if (pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة")) {
+            superLog('No slots found, navigating back and retrying...');
+            if (await page.$(backSel)) {
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'networkidle2' }),
+                    page.click(backSel)
+                ]);
+                await delay(1000);
+            }
+
+            for (let i = 0; i < 2; i++) {
+                if (await page.$(nextSel)) {
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'networkidle2' }),
+                        page.click(nextSel)
+                    ]);
+                    await delay(1000);
+                }
+            }
+
+            // Re-check
+            pageText = await page.evaluate(() => document.body.innerText);
+            radios = await page.$$('input[type="radio"]');
+        }
+
+        // Send Telegram if slots found
+        if (radios.length > 0 && !pageText.includes("no appointments available") && !pageText.includes("لا توجد مواعيد متاحة")) {
             superLog('⚡ SLOT FOUND! Sending Telegram message...');
             const screenshotPath = path.join(__dirname, 'slot.png');
             await page.screenshot({ path: screenshotPath, fullPage: true });
