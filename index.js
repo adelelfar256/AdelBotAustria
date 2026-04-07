@@ -3,6 +3,7 @@ require('dotenv').config();
 const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const path = require('path');
+const fs = require('fs');
 
 // =========================
 // CONFIG
@@ -13,8 +14,12 @@ if (!telegramToken) {
     throw new Error("❌ TELEGRAM_TOKEN is missing!");
 }
 
-// ✅ IMPORTANT: use Render-installed Chrome OR fallback
-const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath();
+// ✅ IMPORTANT: Explicit Chrome path (Render fix)
+const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH;
+
+if (!CHROME_PATH) {
+    throw new Error("❌ PUPPETEER_EXECUTABLE_PATH not set!");
+}
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg';
@@ -55,13 +60,9 @@ const bot = new TelegramBot(telegramToken, {
     polling: { params: { drop_pending_updates: true } }
 });
 
-// ✅ FIX 409 ERROR
+// ✅ Fix 409 error
 bot.on("polling_error", (err) => {
     console.log("Polling error:", err.message);
-
-    if (err.message.includes("409")) {
-        console.log("⚠️ Another instance is running. Ignore.");
-    }
 });
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -193,15 +194,18 @@ async function runFlow() {
     let browser;
 
     try {
-       const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-    ]
-});
+        browser = await puppeteer.launch({
+            headless: "new",
+            executablePath: CHROME_PATH,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                '--single-process'
+            ]
+        });
 
         currentPage = await browser.newPage();
 
@@ -295,12 +299,6 @@ async function main() {
 
     loop();
 }
-
-// =========================
-// GLOBAL ERROR HANDLING
-// =========================
-process.on('unhandledRejection', err => console.error('Unhandled:', err));
-process.on('uncaughtException', err => console.error('Uncaught:', err));
 
 // =========================
 // START
