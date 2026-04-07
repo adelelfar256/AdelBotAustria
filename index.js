@@ -1,5 +1,6 @@
-const puppeteer = require('puppeteer');
 require('dotenv').config();
+
+const puppeteer = require('puppeteer');
 const TelegramBot = require('node-telegram-bot-api');
 const path = require('path');
 
@@ -9,14 +10,17 @@ const path = require('path');
 const telegramToken = process.env.TELEGRAM_TOKEN;
 
 if (!telegramToken) {
-    throw new Error("❌ TELEGRAM_TOKEN is missing in Render ENV!");
+    throw new Error("❌ TELEGRAM_TOKEN is missing!");
 }
+
+// ✅ IMPORTANT: use Render-installed Chrome OR fallback
+const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath();
 
 const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
 const CALENDAR_SEARCH = 'Beg';
 const CHECK_INTERVAL = 45000;
 
-// ✅ YOUR TELEGRAM ID HARDCODED
+// ✅ YOUR TELEGRAM ID
 let users = {
     "7379376037": {
         firstName: "a",
@@ -44,11 +48,21 @@ let users = {
 let currentPage = null;
 let isWaitingForCaptcha = false;
 
+// =========================
+// TELEGRAM BOT
+// =========================
 const bot = new TelegramBot(telegramToken, {
     polling: { params: { drop_pending_updates: true } }
 });
 
-bot.on("polling_error", (err) => console.log("Polling error:", err.message));
+// ✅ FIX 409 ERROR
+bot.on("polling_error", (err) => {
+    console.log("Polling error:", err.message);
+
+    if (err.message.includes("409")) {
+        console.log("⚠️ Another instance is running. Ignore.");
+    }
+});
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
@@ -88,7 +102,7 @@ async function sendErrorScreenshot(page, stepName) {
 // FORM FILL
 // =========================
 async function fillFormForUser(page, d) {
-    await superLog(`📝 Filling form for ${d.firstName}`);
+    await superLog(`📝 Filling form`);
 
     await page.evaluate((data) => {
         const setV = (s, v) => {
@@ -181,6 +195,7 @@ async function runFlow() {
     try {
         browser = await puppeteer.launch({
             headless: "new",
+            executablePath: CHROME_PATH,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -211,7 +226,6 @@ async function runFlow() {
             await delay(1000);
         }
 
-        // Navigate steps
         for (let i = 0; i < 3; i++) {
             await Promise.all([
                 currentPage.waitForNavigation({ waitUntil: 'networkidle2' }),
@@ -266,10 +280,10 @@ async function runFlow() {
 }
 
 // =========================
-// SAFE LOOP
+// LOOP
 // =========================
 async function main() {
-    await superLog("🤖 Bot started on Render");
+    await superLog("🤖 Bot started");
 
     const loop = async () => {
         try {
