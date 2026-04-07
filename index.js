@@ -8,8 +8,8 @@ require('dotenv').config();
 // CONFIG
 // =========================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Bangkok';
-const CALENDAR_SEARCH = 'Beg';
+const TARGET_URL = 'https://appointment.bmeia.gv.at/?Office=Kairo';
+const CALENDAR_SEARCH = 'Bac';
 const CHECK_INTERVAL = 45000;
 
 const usersPath = path.join(__dirname, 'users.json');
@@ -62,56 +62,61 @@ async function checkSlots() {
 
         // Click Next 4 times initially
         for (let i = 0; i < 4; i++) {
-            await page.waitForSelector(nextSel, { timeout: 20000 });
-            await Promise.all([
-                page.waitForNavigation({ waitUntil: 'networkidle2' }),
-                page.click(nextSel)
-            ]);
-            await delay(1000);
-        }
-
-        // Check for slots
-        let pageText = await page.evaluate(() => document.body.innerText);
-        let radios = await page.$$('input[type="radio"]');
-
-        // If "no appointments available" appears, click back → next → next
-        if (pageText.includes("no appointments available") || pageText.includes("لا توجد مواعيد متاحة")) {
-            superLog('No slots found, navigating back and retrying...');
-            if (await page.$(backSel)) {
+            if (await page.$(nextSel)) {
                 await Promise.all([
                     page.waitForNavigation({ waitUntil: 'networkidle2' }),
-                    page.click(backSel)
+                    page.click(nextSel)
                 ]);
                 await delay(1000);
             }
+        }
 
-            for (let i = 0; i < 2; i++) {
-                if (await page.$(nextSel)) {
+        // Main loop to check slots
+        let keepChecking = true;
+        while (keepChecking) {
+            await delay(1000);
+
+            const pageText = await page.evaluate(() => document.body.innerText);
+            const radios = await page.$$('input[type="radio"]');
+            const nextExists = await page.$(nextSel);
+
+            // Slot found
+            if (radios.length > 0) {
+                superLog('⚡ SLOT FOUND! Sending Telegram message...');
+                const screenshotPath = path.join(__dirname, 'slot.png');
+                await page.screenshot({ path: screenshotPath, fullPage: true });
+
+                const userId = Object.keys(users)[0];
+                if (userId) {
+                    await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT AVAILABLE!" });
+                }
+                keepChecking = false;
+                break;
+            }
+
+            // No radio buttons and no next → retry by back + next + next
+            if (radios.length === 0 && !nextExists) {
+                superLog('No appointments. Retrying via Back → Next → Next...');
+                if (await page.$(backSel)) {
                     await Promise.all([
                         page.waitForNavigation({ waitUntil: 'networkidle2' }),
-                        page.click(nextSel)
+                        page.click(backSel)
                     ]);
                     await delay(1000);
                 }
+
+                for (let i = 0; i < 2; i++) {
+                    if (await page.$(nextSel)) {
+                        await Promise.all([
+                            page.waitForNavigation({ waitUntil: 'networkidle2' }),
+                            page.click(nextSel)
+                        ]);
+                        await delay(1000);
+                    }
+                }
             }
 
-            // Re-check
-            pageText = await page.evaluate(() => document.body.innerText);
-            radios = await page.$$('input[type="radio"]');
-        }
-
-        // Send Telegram if slots found
-        if (radios.length > 0 && !pageText.includes("no appointments available") && !pageText.includes("لا توجد مواعيد متاحة")) {
-            superLog('⚡ SLOT FOUND! Sending Telegram message...');
-            const screenshotPath = path.join(__dirname, 'slot.png');
-            await page.screenshot({ path: screenshotPath, fullPage: true });
-
-            const userId = Object.keys(users)[0];
-            if (userId) {
-                await bot.sendPhoto(userId, screenshotPath, { caption: "🚨 SLOT AVAILABLE!" });
-            }
-        } else {
-            superLog('No slots available.');
+            await delay(2000);
         }
 
     } catch (err) {
